@@ -1,0 +1,21 @@
+[package]
+name = "git-pr"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+git2 = "0.15.0"
+regex = "1"
+shell-words = { version = "1.1.0", optional = true }
+tempfile = "3.1.0"
+which = { version = "4.0", default-features = false, optional = true }
+inquire = { version = "0.2.1", features = ["editor"] }
+hubcaps = "0.6"
+async-std = "1.12.0"
+serde_json = "1.0.82"
+serde = "1.0.140"
+colored = "2.0.0"
+lazy_static = "1.4.0"
+clap = { version = "3.2.16", features = ["derive"] }
