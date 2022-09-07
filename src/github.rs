@@ -130,10 +130,11 @@ pub(crate) fn get_user_prs() -> Result<Vec<PullRequest>, String> {
     }).collect())
 }
 
-pub(crate) fn publish_pr(title: String, pr_body: String, reviewers: Vec<String>) -> Result<String, String> {
+pub(crate) fn publish_pr(base: String, title: String, pr_body: String, reviewers: Vec<String>) -> Result<String, String> {
     let cmd = Command::new("gh")
         .args(vec![
             "pr", "create",
+            "-B", format!("{}", base).as_str(),
             "-t", format!("{}", title).as_str(),
             "-a", "@me",
             "-b", format!("{}", pr_body).as_str(),

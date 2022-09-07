@@ -28,7 +28,7 @@ fn main() {
     style.prompt_prefix = Styled::new(">").with_fg(Color::LightGreen);
     set_global_render_config(style);
 
-    let (jira_ticket, title) = {
+    let (base, jira_ticket, title) = {
         let repo = match Repository::open(".") {
             Ok(repo) => repo,
             Err(_) => {
@@ -41,20 +41,27 @@ fn main() {
             process::exit(1)
         }
 
-        let head = git::get_head(&repo);
+        let head = repo.head().unwrap();
         if is_main(head.shorthand().unwrap()) {
             println!("Can't work in {} branch.", head.shorthand().unwrap());
             process::exit(1);
         }
 
-        let commits = git::get_branch_commits(&repo, head.shorthand().unwrap());
-        match jira::find_ticket(commits.unwrap()) {
+        let branch_commits = git::get_branch_commits(&repo, head.shorthand().unwrap());
+        let (base, commits) = match branch_commits {
+            Ok((base, commits)) => (base, commits),
+            Err(e) => {
+                println!("Error: {}", e);
+                process::exit(1);
+            }
+        };
+
+        match jira::find_ticket(commits) {
             None => {
                 if args.update_only {
                     println!("Jira ticket not found. Can't update prs...");
                     process::exit(1);
                 }
-
 
                 match Text::new("Provide Jira ticket:")
                     .with_validator(&jira::validator)
@@ -72,8 +79,9 @@ fn main() {
                                 process::exit(1);
                             }
                         };
+                        println!("{} Base branch: {}", ">".bright_green(), base.bright_cyan());
 
-                        (ticket.clone(), format!("[{}] : {}", ticket, title))
+                        (base, ticket.clone(), format!("[{}] : {}", ticket, title))
                     }
                     Err(err) => {
                         match err {
@@ -87,7 +95,8 @@ fn main() {
             Some((ticket, title)) => {
                 println!("{} Jira ticket: {}", ">".bright_green(), ticket.bright_cyan());
                 println!("{} PR title: {}", ">".bright_green(), title.bright_cyan());
-                (ticket, title)
+                println!("{} Base branch: {}", ">".bright_green(), base.bright_cyan());
+                (base, ticket, title)
             }
         }
     };
@@ -143,7 +152,7 @@ fn main() {
 
         let body = template::make_body(jira_ticket.clone(), this_pr, implementation);
 
-        match github::publish_pr(title, body, reviewers) {
+        match github::publish_pr(base, title, body, reviewers) {
             Ok(url) => {
                 println!("Published at: {}", url)
             }
