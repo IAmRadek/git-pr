@@ -1,108 +1,139 @@
-use std::any::Any;
+#![feature(slice_take)]
+
 use std::process;
 
 use clap::Parser;
 use colored::Colorize;
-use git2::{Repository, RepositoryState};
-use inquire::{Editor, MultiSelect, set_global_render_config, Text};
+use inquire::{CustomUserError, Editor, MultiSelect, Select, set_global_render_config, Text};
 use inquire::error::InquireError;
+use inquire::list_option::ListOption;
 use inquire::ui::{Color, RenderConfig, Styled};
+use inquire::validator::Validation;
+
+use tags::tags::Tags;
+
+use crate::errors::Error;
 
 mod github;
 mod git;
 mod template;
+mod config;
+mod errors;
+mod cli;
+mod tags;
 mod jira;
 
-
-#[derive(Parser, Debug)]
-#[clap(author, version, about, long_about = None)]
-struct Args {
-    #[clap(short, long, value_parser, default_value_t = false)]
-    update_only: bool,
+#[derive(Debug, Default)]
+struct PR {
+    title: String,
+    tag: String,
+    is_jira: bool,
+    this_pr: String,
+    impl_and_considerations: String,
+    reviewers: Vec<String>,
+    base: String,
 }
 
+
 fn main() {
-    let args = Args::parse();
+    let args = cli::Args::parse();
 
     let mut style = RenderConfig::default_colored();
     style.prompt_prefix = Styled::new(">").with_fg(Color::LightGreen);
     set_global_render_config(style);
 
-    let (base, jira_ticket, title) = {
-        let repo = match Repository::open(".") {
-            Ok(repo) => repo,
-            Err(_) => {
-                println!("Expected to be run in git repository.");
-                process::exit(1);
-            }
-        };
-        if repo.state() != RepositoryState::Clean {
-            println!("Commit changes first.");
-            process::exit(1)
-        }
+    let mut pr = PR::default();
 
-        let head = repo.head().unwrap();
-        if is_main(head.shorthand().unwrap()) {
-            println!("Can't work in {} branch.", head.shorthand().unwrap());
+    let branch_info = match git::get_branch_bases_and_commits() {
+        Ok(b) => b,
+        Err(err) => {
+            match err {
+                Error::NotInGitRepo => {
+                    println!("Expected to be run in git repository.");
+                }
+                Error::BranchNotClean => {
+                    println!("Branch is not clean. Please commit or stash changes.");
+                }
+                Error::CannotBeInMainBranch(m) => {
+                    println!("Can't be in main branch: {}", m.bright_cyan());
+                }
+            }
             process::exit(1);
         }
+    };
+    if branch_info.commits.is_empty() {
+        println!("No commits found. Exiting...");
+        process::exit(1);
+    }
 
-        let branch_commits = git::get_branch_commits(&repo, head.shorthand().unwrap());
-        let (base, commits) = match branch_commits {
-            Ok((base, commits)) => (base, commits),
-            Err(e) => {
-                println!("Error: {}", e);
-                process::exit(1);
-            }
-        };
+    let mut tags = Tags::from_file(config::get_tags_path()).unwrap();
 
-        match jira::find_ticket(commits) {
-            None => {
-                if args.update_only {
-                    println!("Jira ticket not found. Can't update prs...");
+    let found_tag = tags::tags::extract_from_vec(branch_info.commits.clone());
+    if found_tag.is_some() {
+        let (tag, commit) = found_tag.unwrap();
+
+        tags.add_and_save(tag.clone()).unwrap();
+
+        pr.tag = tag;
+        pr.title = commit;
+        pr.is_jira = true; // TODO: check if it's jira
+
+        println!("{} PR title: {}", ">".bright_green(), pr.title.bright_cyan());
+        println!("{} PR Tag: {}", ">".bright_green(), pr.tag.bright_cyan());
+    } else {
+        let title = Text::new("PR title: ")
+            .with_default(branch_info.commits.last().unwrap())
+            .with_autocomplete(branch_info.clone())
+            .prompt()
+            .unwrap();
+
+        let selected_tag = if tags.is_empty() {
+            match Text::new("PR Tag:")
+                .with_validator(Tags::validator)
+                .prompt() {
+                Ok(tag) => tag,
+                Err(err) => {
+                    match err {
+                        InquireError::OperationInterrupted => {}
+                        _ => println!("Something went wrong {:?}", err),
+                    }
                     process::exit(1);
                 }
-
-                match Text::new("Provide Jira ticket:")
-                    .with_validator(&jira::validator)
-                    .prompt() {
-                    Ok(ticket) => {
-                        let title = match Text::new("Enter PR title: ")
-                            .with_validator(&jira::validator)
-                            .prompt() {
-                            Ok(title) => title,
-                            Err(err) => {
-                                match err {
-                                    InquireError::OperationInterrupted => {}
-                                    _ => println!("Something went wrong {:?}", err),
-                                }
-                                process::exit(1);
-                            }
-                        };
-                        println!("{} Base branch: {}", ">".bright_green(), base.bright_cyan());
-
-                        (base, ticket.clone(), format!("[{}] : {}", ticket, title))
+            }
+        } else {
+            match Text::new("PR Tag:")
+                .with_autocomplete(tags.clone())
+                .with_default(tags.clone().iter().first().unwrap())
+                .prompt() {
+                Ok(tag) => tag,
+                Err(err) => {
+                    match err {
+                        InquireError::OperationInterrupted => {}
+                        _ => println!("Something went wrong {:?}", err),
                     }
-                    Err(err) => {
-                        match err {
-                            InquireError::OperationInterrupted => {}
-                            _ => println!("Something went wrong {:?}", err),
-                        }
-                        process::exit(1);
-                    }
+                    process::exit(1);
                 }
             }
-            Some((ticket, title)) => {
-                println!("{} Jira ticket: {}", ">".bright_green(), ticket.bright_cyan());
-                println!("{} PR title: {}", ">".bright_green(), title.bright_cyan());
-                println!("{} Base branch: {}", ">".bright_green(), base.bright_cyan());
-                (base, ticket, title)
-            }
-        }
+        };
+        tags.add(selected_tag.clone());
+        tags.save().unwrap();
+
+        pr.tag = selected_tag;
+        pr.title = format!("[{}]: {}", pr.tag, title);
+    }
+
+    pr.base = if branch_info.bases.len() > 1 {
+        Select::new("PR base:", branch_info.bases)
+            .prompt()
+            .unwrap()
+    } else {
+        let base = branch_info.bases[0].clone();
+        println!("{} PR base: {}", ">".bright_green(), base.bright_cyan());
+        base
     };
 
     if !args.update_only {
-        let this_pr = match Editor::new("What is this PR doing: ")
+        pr.this_pr = match Editor::new("What is this PR doing: ")
             .with_formatter(&|x| -> String { x.to_string() })
             .prompt() {
             Ok(pr_body) => pr_body,
@@ -114,7 +145,7 @@ fn main() {
                 process::exit(1);
             }
         };
-        let implementation = match Editor::new("Considerations and implementation: ")
+        pr.impl_and_considerations = match Editor::new("Considerations and implementation: ")
             .with_formatter(&|x| -> String { x.to_string() })
             .prompt() {
             Ok(pr_body) => pr_body,
@@ -127,17 +158,16 @@ fn main() {
             }
         };
 
-
-        let reviewers = match MultiSelect::new("Reviewers:", github::get_available_reviewers().unwrap())
-            .with_validator(&|a| {
-                if a.len() < 1 {
-                    return Err("Select at least one reviewer".into());
+        pr.reviewers = match MultiSelect::new("Reviewers:", github::get_available_reviewers().unwrap())
+            .with_validator(|a: &[ListOption<&String>]| -> Result<Validation, CustomUserError> {
+                if a.is_empty() {
+                    return Ok(Validation::Invalid("Select at least one reviewer".into()));
                 }
-                Ok(())
+                Ok(Validation::Valid)
             })
             .with_formatter(&|a| -> String {
                 let selected: Vec<String> = a.iter().map(|x| -> String{ x.to_string() }).collect();
-                format!("{}", selected.join(", "))
+                selected.join(", ")
             })
             .prompt() {
             Ok(ans) => { ans }
@@ -150,9 +180,9 @@ fn main() {
             }
         };
 
-        let body = template::make_body(jira_ticket.clone(), this_pr, implementation);
+        let body = template::make_body(&pr.tag, &pr.is_jira, &pr.this_pr, &pr.impl_and_considerations);
 
-        match github::publish_pr(base, title, body, reviewers) {
+        match github::publish_pr(pr.base, pr.title, body, pr.reviewers, args.dry_run) {
             Ok(url) => {
                 println!("Published at: {}", url)
             }
@@ -167,10 +197,16 @@ fn main() {
         Ok(prs) => {
             let mut ret: Vec<github::PullRequest> = vec![];
 
-            for pr in prs.into_iter() {
-                if let Some(m) = jira::PATTERN.find(pr.title.as_str()) {
-                    if m.as_str().eq(jira_ticket.as_str()) {
-                        ret.push(pr)
+            for each in prs.into_iter() {
+                if !each.title.contains(&pr.tag) {
+                    continue;
+                }
+                match tags::tags::extract_from_str(each.title.as_str()) {
+                    None => {}
+                    Some(tag) => {
+                        if tag.eq(pr.tag.as_str()) {
+                            ret.push(each)
+                        }
                     }
                 }
             }
@@ -182,7 +218,8 @@ fn main() {
         }
     };
 
-    if related_prs.len() == 0 {
+    if related_prs.is_empty() {
+        println!("{} No related prs found. Exiting...", ">".bright_green());
         return;
     }
     println!("{} Found {} related prs. Updating... :)", ">".bright_green(), related_prs.len());
@@ -190,7 +227,7 @@ fn main() {
     for pr in &related_prs {
         let updated_body = template::replace_related_prs(&pr.body, &pr.number, &related_prs);
 
-        match github::update_pr(&pr.number, &pr.resource_path, updated_body) {
+        match github::update_pr(&pr.number, &pr.resource_path, updated_body, args.dry_run) {
             Ok(e) => {
                 println!("{} Updated #{}: {}", "+".bright_green(), pr.number, e);
             }
@@ -200,8 +237,3 @@ fn main() {
         }
     }
 }
-
-fn is_main(name: &str) -> bool {
-    return name == "main" || name == "master";
-}
-

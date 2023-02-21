@@ -18,10 +18,15 @@ Related PRs:
 <!-- IMPLEMENTATION -->
 ";
 
-pub(crate) fn make_body(jira_ticket: String, this_pr: String, implementation: String) -> String {
+pub(crate) fn make_body(jira_ticket: &String, is_jira_ticket: &bool, this_pr: &String, implementation: &String) -> String {
     let jira_url = env!("JIRA_URL", "Unable to find JIRA_URL env");
 
-    let mut template = TEMPLATE.replace("<!-- ISSUE_URL -->", format!("[{}]({}{})", jira_ticket.as_str(), jira_url, jira_ticket.as_str()).as_str());
+    let mut template = TEMPLATE.to_string();
+    if *is_jira_ticket {
+        template = template.replace("<!-- ISSUE_URL -->", format!("[{}]({}{})", jira_ticket.as_str(), jira_url, jira_ticket.as_str()).as_str());
+    } else {
+        template = template.replace("Tracked by <!-- ISSUE_URL -->", "");
+    }
     template = template.replace("<!-- THIS PR -->", this_pr.as_str());
     template = template.replace("<!-- IMPLEMENTATION -->", implementation.as_str());
 

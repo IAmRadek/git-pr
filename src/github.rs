@@ -73,6 +73,12 @@ struct Response<D> {
     data: D,
 }
 
+
+#[derive(Serialize, Deserialize)]
+struct CurrentBranch {
+    title: String,
+}
+
 pub(crate) fn get_available_reviewers() -> Result<Vec<String>, String> {
     let cmd = Command::new("gh")
         .args(vec![
@@ -130,7 +136,14 @@ pub(crate) fn get_user_prs() -> Result<Vec<PullRequest>, String> {
     }).collect())
 }
 
-pub(crate) fn publish_pr(base: String, title: String, pr_body: String, reviewers: Vec<String>) -> Result<String, String> {
+pub(crate) fn publish_pr(base: String, title: String, pr_body: String, reviewers: Vec<String>, dry_run: bool) -> Result<String, String> {
+    if dry_run {
+        println!("gh pr create -B {} -t {} -a @me -b {} -r {}", base, title, pr_body, reviewers.join(","));
+
+        return Ok("Dry run".into());
+    }
+
+
     let cmd = Command::new("gh")
         .args(vec![
             "pr", "create",
@@ -146,7 +159,7 @@ pub(crate) fn publish_pr(base: String, title: String, pr_body: String, reviewers
     Ok(String::from_utf8(cmd.stdout).unwrap_or("Failed to get stdout".into()))
 }
 
-pub(crate) fn update_pr(pr: &u32, resource_path: &String, body: String) -> Result<String, String> {
+pub(crate) fn update_pr(pr: &u32, resource_path: &String, body: String, dry_run: bool) -> Result<String, String> {
     let mut parts: Vec<&str> = resource_path.split("/").collect();
     parts.pop();            // removes pr number
     parts.pop();            // removes "pull"
@@ -157,6 +170,12 @@ pub(crate) fn update_pr(pr: &u32, resource_path: &String, body: String) -> Resul
     let pr_number = format!("{}", pr.clone());
     let pr_body = format!("{}", body.clone());
     let pr_url = format!("{}", repo_url.clone());
+
+    if dry_run {
+        println!("gh pr edit {} --repo {} -b {}", pr_number, pr_url, pr_body);
+
+        return Ok("Dry run".into());
+    }
 
     let cmd = Command::new("gh")
         .args(vec![

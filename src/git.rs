@@ -1,40 +1,90 @@
 use std::collections::{HashMap, HashSet};
-use std::process;
 
-use git2::{Branch, BranchType, Error, ObjectType, Oid, Reference, Repository};
+use git2::{BranchType, Oid, Repository, RepositoryState};
+use inquire::{Autocomplete, CustomUserError};
+use inquire::autocompletion::Replacement;
 
-pub(crate) fn get_branch_commits(repo: &Repository, branch_name: &str) -> Result<(String, Vec<String>), String> {
-    //Iterate over commits and find each commit branch name
+use crate::errors::Error;
+
+pub(crate) fn get_repository() -> Result<Repository, Error> {
+    let r = Repository::open(".").map_err(|_| Error::NotInGitRepo)?;
+    if r.state() != RepositoryState::Clean {
+        Err(Error::BranchNotClean)
+    } else {
+        Ok(r)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BranchInfo {
+    pub bases: Vec<String>,
+    pub commits: Vec<String>,
+}
+
+impl Autocomplete for BranchInfo {
+    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, CustomUserError> {
+        let mut suggestions = Vec::new();
+        for tag in self.commits.iter().rev() {
+            if tag.to_lowercase().contains(input.to_lowercase().as_str()) {
+                suggestions.push(tag.clone());
+            }
+        }
+        Ok(suggestions)
+    }
+
+    fn get_completion(&mut self, input: &str, highlighted_suggestion: Option<String>) -> Result<Replacement, CustomUserError> {
+        if let Some(..) = highlighted_suggestion {
+            return Ok(Some(highlighted_suggestion.unwrap()));
+        }
+        for tag in self.commits.iter() {
+            if tag.contains(input) {
+                return Ok(Some(tag.clone()));
+            }
+        }
+        Ok(None)
+    }
+}
+
+
+pub(crate) fn get_branch_bases_and_commits() -> Result<BranchInfo, Error> {
+    let repo = get_repository()?;
+
+    let head = repo.head().map_err(|_| Error::BranchNotClean)?;
+    let current_branch = head.shorthand().unwrap_or("HEAD");
+
+    if is_main(current_branch) {
+        return Err(Error::CannotBeInMainBranch(current_branch.to_string()));
+    }
+
     let mut commit_branches: HashMap<Oid, HashSet<String>> = HashMap::new();
-
     let branches = repo.branches(None).unwrap();
 
-    let _: Vec<()> = branches.map(|result| {
-        let (b, _) = result.unwrap();
+    for result in branches {
+        let (branch, _) = result.unwrap();
 
-        let name = b.get().shorthand().unwrap();
-        if name == branch_name || name == format!("origin/{}", branch_name) {
-            return;
+        let name = branch.get().shorthand().unwrap();
+        if name == current_branch || name == format!("origin/{}", current_branch) {
+            continue;
         }
 
         let mut revwalk = repo.revwalk().unwrap();
-        revwalk.push_ref(b.get().name().unwrap()).unwrap();
+        revwalk.push_ref(branch.get().name().unwrap()).unwrap();
 
-        let _: Vec<()> = revwalk.map(|id| {
-            let id = id.unwrap();
+        for each in revwalk {
+            let id = each.unwrap();
 
             commit_branches.entry(id).and_modify(|curr| {
                 curr.insert(name.into());
-            }).or_insert(HashSet::from([name.into()]));
-        }).collect();
-    }).collect();
+            }).or_insert_with(|| HashSet::from([name.into()]));
+        }
+    }
 
-    let branch = repo.find_branch(branch_name, BranchType::Local).unwrap();
+    let branch = repo.find_branch(current_branch, BranchType::Local).unwrap();
     let mut revwalk = repo.revwalk().unwrap();
     revwalk.push_ref(branch.get().name().unwrap()).unwrap();
 
-    let mut my_commits: Vec<String> = Vec::new();
-    let mut base = String::new();
+    let mut bases: Vec<String> = Vec::new();
+    let mut commits: Vec<String> = Vec::new();
 
     for each in revwalk {
         let oid = each.unwrap();
@@ -43,40 +93,24 @@ pub(crate) fn get_branch_commits(repo: &Repository, branch_name: &str) -> Result
             let mut branches = branches.iter().collect::<Vec<&String>>();
             branches.sort();
             branches.iter().filter(|b| !b.starts_with("origin/")).take(1).for_each(|b| {
-                base = b.to_string();
+                bases.push(b.to_string());
             });
-            println!("{} {:?}", oid, branches);
             break;
         } else {
             let commit = repo.find_commit(oid).unwrap();
             let message = commit.message().unwrap();
-            my_commits.push(message.to_string());
+            commits.push(message.trim().to_string());
         }
     }
 
-    Ok((base, my_commits))
+    Ok(BranchInfo {
+        bases,
+        commits,
+    })
 }
 
-fn get_main_branch(repo: &Repository) -> Result<Branch, Error> {
-    match repo.find_branch("master", BranchType::Local) {
-        Ok(branch) => Ok(branch),
-        Err(_) => {
-            match repo.find_branch("main", BranchType::Local) {
-                Ok(branch) => Ok(branch),
-                Err(err) => {
-                    Err(err)
-                }
-            }
-        }
-    }
+fn is_main(name: &str) -> bool {
+    let forbidden = vec!["master", "main", "development", "stage", "production"];
+    forbidden.contains(&name)
 }
 
-pub(crate) fn get_head(repo: &Repository) -> Reference {
-    match repo.head() {
-        Ok(head) => head,
-        Err(_) => {
-            println!("Unable to find repo HEAD.");
-            process::exit(1)
-        }
-    }
-}
