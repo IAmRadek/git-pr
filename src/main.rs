@@ -196,13 +196,14 @@ fn main() {
     let related_prs = match github::get_user_prs() {
         Ok(prs) => {
             let mut ret: Vec<github::PullRequest> = vec![];
-
             for each in prs.into_iter() {
                 if !each.title.contains(&pr.tag) {
                     continue;
                 }
                 match tags::tags::extract_from_str(each.title.as_str()) {
-                    None => {}
+                    None => {
+                        println!("{} {} {}", "x".bright_red(), each.title.bright_cyan(), "No tag found".bright_red());
+                    }
                     Some(tag) => {
                         if tag.eq(pr.tag.as_str()) {
                             ret.push(each)
