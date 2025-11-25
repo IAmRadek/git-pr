@@ -1,27 +1,25 @@
-#![feature(slice_take)]
-
 use std::process;
 
 use clap::Parser;
 use colored::Colorize;
-use inquire::{CustomUserError, Editor, MultiSelect, Select, set_global_render_config, Text};
 use inquire::error::InquireError;
 use inquire::list_option::ListOption;
 use inquire::ui::{Color, RenderConfig, Styled};
 use inquire::validator::Validation;
+use inquire::{set_global_render_config, CustomUserError, Editor, MultiSelect, Select, Text};
 
 use tags::tags::Tags;
 
 use crate::errors::Error;
 
-mod github;
-mod git;
-mod template;
+mod cli;
 mod config;
 mod errors;
-mod cli;
-mod tags;
+mod git;
+mod github;
 mod jira;
+mod tags;
+mod template;
 
 #[derive(Debug, Default)]
 struct PR {
@@ -33,7 +31,6 @@ struct PR {
     reviewers: Vec<String>,
     base: String,
 }
-
 
 fn main() {
     let args = cli::Args::parse();
@@ -78,7 +75,11 @@ fn main() {
         pr.title = commit;
         pr.is_jira = true; // TODO: check if it's jira
 
-        println!("{} PR title: {}", ">".bright_green(), pr.title.bright_cyan());
+        println!(
+            "{} PR title: {}",
+            ">".bright_green(),
+            pr.title.bright_cyan()
+        );
         println!("{} PR Tag: {}", ">".bright_green(), pr.tag.bright_cyan());
     } else {
         let title = Text::new("PR title: ")
@@ -90,7 +91,8 @@ fn main() {
         let selected_tag = if tags.is_empty() {
             match Text::new("PR Tag:")
                 .with_validator(Tags::validator)
-                .prompt() {
+                .prompt()
+            {
                 Ok(tag) => tag,
                 Err(err) => {
                     match err {
@@ -104,7 +106,8 @@ fn main() {
             match Text::new("PR Tag:")
                 .with_autocomplete(tags.clone())
                 .with_default(tags.clone().iter().first().unwrap())
-                .prompt() {
+                .prompt()
+            {
                 Ok(tag) => tag,
                 Err(err) => {
                     match err {
@@ -123,9 +126,7 @@ fn main() {
     }
 
     pr.base = if branch_info.bases.len() > 1 {
-        Select::new("PR base:", branch_info.bases)
-            .prompt()
-            .unwrap()
+        Select::new("PR base:", branch_info.bases).prompt().unwrap()
     } else {
         let base = branch_info.bases[0].clone();
         println!("{} PR base: {}", ">".bright_green(), base.bright_cyan());
@@ -135,7 +136,8 @@ fn main() {
     if !args.update_only {
         pr.this_pr = match Editor::new("What is this PR doing: ")
             .with_formatter(&|x| -> String { x.to_string() })
-            .prompt() {
+            .prompt()
+        {
             Ok(pr_body) => pr_body,
             Err(err) => {
                 match err {
@@ -147,7 +149,8 @@ fn main() {
         };
         pr.impl_and_considerations = match Editor::new("Considerations and implementation: ")
             .with_formatter(&|x| -> String { x.to_string() })
-            .prompt() {
+            .prompt()
+        {
             Ok(pr_body) => pr_body,
             Err(err) => {
                 match err {
@@ -158,29 +161,39 @@ fn main() {
             }
         };
 
-        pr.reviewers = match MultiSelect::new("Reviewers:", github::get_available_reviewers().unwrap())
-            .with_validator(|a: &[ListOption<&String>]| -> Result<Validation, CustomUserError> {
-                if a.is_empty() {
-                    return Ok(Validation::Invalid("Select at least one reviewer".into()));
+        pr.reviewers =
+            match MultiSelect::new("Reviewers:", github::get_available_reviewers().unwrap())
+                .with_validator(
+                    |a: &[ListOption<&String>]| -> Result<Validation, CustomUserError> {
+                        if a.is_empty() {
+                            return Ok(Validation::Invalid("Select at least one reviewer".into()));
+                        }
+                        Ok(Validation::Valid)
+                    },
+                )
+                .with_formatter(&|a| -> String {
+                    let selected: Vec<String> =
+                        a.iter().map(|x| -> String { x.to_string() }).collect();
+                    selected.join(", ")
+                })
+                .prompt()
+            {
+                Ok(ans) => ans,
+                Err(err) => {
+                    match err {
+                        InquireError::OperationInterrupted => {}
+                        _ => println!("Something went wrong {:?}", err),
+                    }
+                    process::exit(1);
                 }
-                Ok(Validation::Valid)
-            })
-            .with_formatter(&|a| -> String {
-                let selected: Vec<String> = a.iter().map(|x| -> String{ x.to_string() }).collect();
-                selected.join(", ")
-            })
-            .prompt() {
-            Ok(ans) => { ans }
-            Err(err) => {
-                match err {
-                    InquireError::OperationInterrupted => {}
-                    _ => println!("Something went wrong {:?}", err),
-                }
-                process::exit(1);
-            }
-        };
+            };
 
-        let body = template::make_body(&pr.tag, &pr.is_jira, &pr.this_pr, &pr.impl_and_considerations);
+        let body = template::make_body(
+            &pr.tag,
+            &pr.is_jira,
+            &pr.this_pr,
+            &pr.impl_and_considerations,
+        );
 
         match github::publish_pr(pr.base, pr.title, body, pr.reviewers, args.dry_run) {
             Ok(url) => {
@@ -202,7 +215,12 @@ fn main() {
                 }
                 match tags::tags::extract_from_str(each.title.as_str()) {
                     None => {
-                        println!("{} {} {}", "x".bright_red(), each.title.bright_cyan(), "No tag found".bright_red());
+                        println!(
+                            "{} {} {}",
+                            "x".bright_red(),
+                            each.title.bright_cyan(),
+                            "No tag found".bright_red()
+                        );
                     }
                     Some(tag) => {
                         if tag.eq(pr.tag.as_str()) {
@@ -223,7 +241,11 @@ fn main() {
         println!("{} No related prs found. Exiting...", ">".bright_green());
         return;
     }
-    println!("{} Found {} related prs. Updating... :)", ">".bright_green(), related_prs.len());
+    println!(
+        "{} Found {} related prs. Updating... :)",
+        ">".bright_green(),
+        related_prs.len()
+    );
 
     for pr in &related_prs {
         let updated_body = template::replace_related_prs(&pr.body, &pr.number, &related_prs);

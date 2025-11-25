@@ -73,7 +73,6 @@ struct Response<D> {
     data: D,
 }
 
-
 #[derive(Serialize, Deserialize)]
 struct CurrentBranch {
     title: String,
@@ -82,21 +81,26 @@ struct CurrentBranch {
 pub(crate) fn get_available_reviewers() -> Result<Vec<String>, String> {
     let cmd = Command::new("gh")
         .args(vec![
-            "api", "graphql",
-            "-F", "owner=:owner",
-            "-F", "repo=:repo",
-            "-f", format!("query={}", REVIEWERS_QUERY).as_str(),
+            "api",
+            "graphql",
+            "-F",
+            "owner=:owner",
+            "-F",
+            "repo=:repo",
+            "-f",
+            format!("query={}", REVIEWERS_QUERY).as_str(),
         ])
         .output()
         .expect("Failed to get available reviewers");
 
-    let v: Response<Repository> = serde_json::from_slice(cmd.stdout.as_slice())
-        .expect("expected to be json");
+    let v: Response<Repository> =
+        serde_json::from_slice(cmd.stdout.as_slice()).expect("expected to be json");
 
     let nodes = v.data.repository.assignable_users.nodes;
-    Ok(nodes.into_iter().map(|node| -> String {
-        node.login
-    }).collect())
+    Ok(nodes
+        .into_iter()
+        .map(|node| -> String { node.login })
+        .collect())
 }
 
 const RELATED_PR_QUERY: &str = "query ($login: String!) {
@@ -116,53 +120,80 @@ const RELATED_PR_QUERY: &str = "query ($login: String!) {
 }";
 
 pub(crate) fn get_user_prs() -> Result<Vec<PullRequest>, String> {
-    let login = env!("GITHUB_USER", "Env GITHUB_USER not found!");
+    let login = std::env::var("GITHUB_USER").expect("Env GITHUB_USER not found!");
 
     let cmd = Command::new("gh")
         .args(vec![
-            "api", "graphql",
-            "-F", format!("login={}", login).as_str(),
-            "-f", format!("query={}", RELATED_PR_QUERY).as_str(),
+            "api",
+            "graphql",
+            "-F",
+            format!("login={}", login).as_str(),
+            "-f",
+            format!("query={}", RELATED_PR_QUERY).as_str(),
         ])
         .output()
         .expect("Failed to get available reviewers");
 
-    let v: Response<User> = serde_json::from_slice(cmd.stdout.as_slice())
-        .expect("expected to be json");
+    let v: Response<User> =
+        serde_json::from_slice(cmd.stdout.as_slice()).expect("expected to be json");
 
     let edges = v.data.user.pull_requests.edges;
-    Ok(edges.into_iter().map(|edge| -> PullRequest {
-        edge.node
-    }).collect())
+    Ok(edges
+        .into_iter()
+        .map(|edge| -> PullRequest { edge.node })
+        .collect())
 }
 
-pub(crate) fn publish_pr(base: String, title: String, pr_body: String, reviewers: Vec<String>, dry_run: bool) -> Result<String, String> {
+pub(crate) fn publish_pr(
+    base: String,
+    title: String,
+    pr_body: String,
+    reviewers: Vec<String>,
+    dry_run: bool,
+) -> Result<String, String> {
     if dry_run {
-        println!("gh pr create -B {} -t {} -a @me -b {} -r {}", base, title, pr_body, reviewers.join(","));
+        println!(
+            "gh pr create -B {} -t {} -a @me -b {} -r {}",
+            base,
+            title,
+            pr_body,
+            reviewers.join(",")
+        );
 
         return Ok("Dry run".into());
     }
 
-
     let cmd = Command::new("gh")
         .args(vec![
-            "pr", "create",
-            "-B", format!("{}", base).as_str(),
-            "-t", format!("{}", title).as_str(),
-            "-a", "@me",
-            "-b", format!("{}", pr_body).as_str(),
-            "-r", reviewers.join(",").as_str(),
+            "pr",
+            "create",
+            "-B",
+            format!("{}", base).as_str(),
+            "-t",
+            format!("{}", title).as_str(),
+            "-a",
+            "@me",
+            "-b",
+            format!("{}", pr_body).as_str(),
+            "-r",
+            reviewers.join(",").as_str(),
         ])
         .output()
         .expect("Failed to create PR");
 
-    Ok(String::from_utf8(cmd.stdout).unwrap_or("Failed to get stdout".into()))
+    let stdout = String::from_utf8(cmd.stdout).unwrap_or("Failed to get stdout".into());
+    Ok(String::from(stdout.trim()))
 }
 
-pub(crate) fn update_pr(pr: &u32, resource_path: &String, body: String, dry_run: bool) -> Result<String, String> {
+pub(crate) fn update_pr(
+    pr: &u32,
+    resource_path: &String,
+    body: String,
+    dry_run: bool,
+) -> Result<String, String> {
     let mut parts: Vec<&str> = resource_path.split("/").collect();
-    parts.pop();            // removes pr number
-    parts.pop();            // removes "pull"
+    parts.pop(); // removes pr number
+    parts.pop(); // removes "pull"
     parts.remove(0); // removes ""
 
     let repo_url = parts.join("/");
@@ -179,14 +210,16 @@ pub(crate) fn update_pr(pr: &u32, resource_path: &String, body: String, dry_run:
 
     let cmd = Command::new("gh")
         .args(vec![
-            "pr", "edit",
+            "pr",
+            "edit",
             pr_number.as_str(),
-            "--repo", pr_url.as_str(),
-            "-b", pr_body.as_str(),
+            "--repo",
+            pr_url.as_str(),
+            "-b",
+            pr_body.as_str(),
         ])
         .output()
         .expect("Failed to create PR");
-
 
     let stdout = String::from_utf8(cmd.stdout).unwrap_or("Failed to get stdout".into());
     Ok(String::from(stdout.trim()))

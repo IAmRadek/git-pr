@@ -19,7 +19,7 @@ Related PRs:
 ";
 
 pub(crate) fn make_body(jira_ticket: &String, is_jira_ticket: &bool, this_pr: &String, implementation: &String) -> String {
-    let jira_url = env!("JIRA_URL", "Unable to find JIRA_URL env");
+    let jira_url = std::env::var("JIRA_URL").expect("Unable to find JIRA_URL env");
 
     let mut template = TEMPLATE.to_string();
     if *is_jira_ticket {
