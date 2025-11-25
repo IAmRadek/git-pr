@@ -30,12 +30,15 @@ pub fn run(args: crate::cli::Args) -> Result<()> {
 
     pr.base = select_base_branch(&branch_info)?;
 
+    // Track the newly created PR number (if any)
+    let mut created_pr_number: Option<u32> = None;
+
     if !args.update_only {
         pr = gather_pr_details(&config, pr)?;
-        publish_pr(&config, &pr, args.dry_run)?;
+        created_pr_number = publish_pr(&config, &pr, args.dry_run)?;
     }
 
-    update_related_prs(&config, &pr, args.dry_run)?;
+    update_related_prs(&config, &pr, created_pr_number, args.dry_run)?;
 
     Ok(())
 }
@@ -104,8 +107,8 @@ fn gather_pr_details(config: &Config, pr: PullRequest) -> Result<PullRequest> {
     Ok(pr.with_fields(fields).with_reviewers(reviewers))
 }
 
-/// Publish the PR to GitHub
-fn publish_pr(config: &Config, pr: &PullRequest, dry_run: bool) -> Result<()> {
+/// Publish the PR to GitHub and return the PR number if created
+fn publish_pr(config: &Config, pr: &PullRequest, dry_run: bool) -> Result<Option<u32>> {
     let body = template::make_body(config, &pr.tag, pr.is_jira, &pr.fields);
 
     match github::publish_pr(
@@ -117,20 +120,51 @@ fn publish_pr(config: &Config, pr: &PullRequest, dry_run: bool) -> Result<()> {
     ) {
         Ok(url) => {
             println!("Published at: {}", url);
-            Ok(())
+            // Parse the PR number from the URL
+            let pr_number = github::parse_pr_url(&url).map(|(num, _)| num);
+            Ok(pr_number)
         }
         Err(err) => Err(Error::GitHubCli(err)),
     }
 }
 
 /// Find and update related PRs with the same tag
-fn update_related_prs(config: &Config, pr: &PullRequest, dry_run: bool) -> Result<()> {
-    let related_prs = match github::get_user_prs(config.github_user().as_deref()) {
+///
+/// If `created_pr_number` is provided, ensures that PR is included in the list
+/// even if GitHub's API hasn't indexed it yet.
+fn update_related_prs(
+    config: &Config,
+    pr: &PullRequest,
+    created_pr_number: Option<u32>,
+    dry_run: bool,
+) -> Result<()> {
+    let mut related_prs = match github::get_user_prs(config.github_user().as_deref()) {
         Ok(prs) => filter_related_prs(prs, &pr.tag),
         Err(err) => {
             return Err(Error::GitHubCli(err));
         }
     };
+
+    // If we just created a PR, ensure it's in the list (handles race condition with GitHub API)
+    if let Some(pr_number) = created_pr_number {
+        let already_in_list = related_prs.iter().any(|p| p.number == pr_number);
+        if !already_in_list {
+            // Fetch the newly created PR details
+            match github::get_pr_by_number(pr_number) {
+                Ok(new_pr) => {
+                    related_prs.insert(0, new_pr);
+                }
+                Err(err) => {
+                    println!(
+                        "{} Could not fetch newly created PR #{}: {}",
+                        "!".yellow(),
+                        pr_number,
+                        err
+                    );
+                }
+            }
+        }
+    }
 
     if related_prs.is_empty() {
         println!("{} No related PRs found.", ">".bright_green());

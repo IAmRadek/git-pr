@@ -188,6 +188,87 @@ pub fn get_user_prs(github_user: Option<&str>) -> Result<Vec<PullRequest>, Strin
     Ok(prs)
 }
 
+/// Parse a PR URL to extract the PR number and resource path
+///
+/// # Arguments
+/// * `url` - The PR URL (e.g., "https://github.com/owner/repo/pull/123")
+///
+/// # Returns
+/// A tuple of (pr_number, resource_path) or None if parsing fails
+pub fn parse_pr_url(url: &str) -> Option<(u32, String)> {
+    // URL format: https://github.com/owner/repo/pull/123
+    let url = url.trim();
+
+    // Remove protocol and domain
+    let path = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))?;
+
+    // Split into parts: owner/repo/pull/number
+    let parts: Vec<&str> = path.split('/').collect();
+    if parts.len() < 4 || parts[2] != "pull" {
+        return None;
+    }
+
+    let owner = parts[0];
+    let repo = parts[1];
+    let number: u32 = parts[3].parse().ok()?;
+
+    let resource_path = format!("/{}/{}/pull/{}", owner, repo, number);
+
+    Some((number, resource_path))
+}
+
+/// Fetch a single PR by number from the current repository
+///
+/// # Arguments
+/// * `pr_number` - The PR number to fetch
+///
+/// # Returns
+/// The PullRequest details or an error
+pub fn get_pr_by_number(pr_number: u32) -> Result<PullRequest, String> {
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "id,title,number,body,url",
+        ])
+        .output()
+        .map_err(|e| format!("Failed to execute gh command: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to fetch PR: {}", stderr));
+    }
+
+    #[derive(Deserialize)]
+    struct PrView {
+        id: String,
+        title: String,
+        number: u32,
+        body: String,
+        url: String,
+    }
+
+    let pr_view: PrView = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("Failed to parse PR response: {}", e))?;
+
+    // Convert URL to resource path
+    let resource_path = parse_pr_url(&pr_view.url)
+        .map(|(_, path)| path)
+        .unwrap_or_default();
+
+    Ok(PullRequest {
+        id: pr_view.id,
+        title: pr_view.title,
+        resource_path,
+        number: pr_view.number,
+        body: pr_view.body,
+    })
+}
+
 /// Publish a new pull request to GitHub
 ///
 /// # Arguments
@@ -291,4 +372,59 @@ pub fn update_pr(
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     Ok(stdout.trim().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_pr_url_https() {
+        let url = "https://github.com/owner/repo/pull/123";
+        let result = parse_pr_url(url);
+        assert_eq!(result, Some((123, "/owner/repo/pull/123".to_string())));
+    }
+
+    #[test]
+    fn test_parse_pr_url_http() {
+        let url = "http://github.com/owner/repo/pull/456";
+        let result = parse_pr_url(url);
+        assert_eq!(result, Some((456, "/owner/repo/pull/456".to_string())));
+    }
+
+    #[test]
+    fn test_parse_pr_url_with_whitespace() {
+        let url = "  https://github.com/owner/repo/pull/789  \n";
+        let result = parse_pr_url(url);
+        assert_eq!(result, Some((789, "/owner/repo/pull/789".to_string())));
+    }
+
+    #[test]
+    fn test_parse_pr_url_invalid_not_pull() {
+        let url = "https://github.com/owner/repo/issues/123";
+        let result = parse_pr_url(url);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_pr_url_invalid_no_number() {
+        let url = "https://github.com/owner/repo/pull/abc";
+        let result = parse_pr_url(url);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_pr_url_invalid_too_short() {
+        let url = "https://github.com/owner";
+        let result = parse_pr_url(url);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_parse_pr_url_with_extra_path() {
+        // URLs like https://github.com/owner/repo/pull/123/files should still work
+        let url = "https://github.com/owner/repo/pull/123/files";
+        let result = parse_pr_url(url);
+        assert_eq!(result, Some((123, "/owner/repo/pull/123".to_string())));
+    }
 }
