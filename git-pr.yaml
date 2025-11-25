@@ -1,0 +1,106 @@
+# git-pr Configuration File
+# =========================
+# Place this file at ~/.config/git-pr/config.yaml
+# or specify a custom config directory with --config or GIT_PR_CONFIG env var
+
+# Jira Integration Settings
+jira:
+  # Base URL for Jira ticket links
+  # Example: "https://company.atlassian.net/browse/"
+  # Can also be set via JIRA_URL environment variable
+  # When set and a Jira-style tag is found in commits, a tracking link
+  # will be automatically prepended to the PR body
+  url: null
+
+# GitHub Settings
+github:
+  # Your GitHub username (used for fetching your related PRs)
+  # Can also be set via GITHUB_USER environment variable
+  user: null
+
+  # Default reviewers to suggest when creating PRs
+  default_reviewers: []
+  # Example:
+  # default_reviewers:
+  #   - teammate1
+  #   - teammate2
+
+# PR Template Settings
+template:
+  # The PR body template
+  #
+  # Form field placeholders use {{field_name}} syntax and will be replaced
+  # with user input. Empty optional fields will have their line removed.
+  #
+  # Special markers for related PRs section (HTML comments so they're
+  # invisible in rendered markdown but still findable for updates):
+  #   - <!-- RELATED_PR -->   : Start of related PRs section
+  #   - <!-- /RELATED_PR -->  : End of related PRs section
+  body: |
+    Related PRs:
+    <!-- RELATED_PR -->
+    <!-- /RELATED_PR -->
+
+    ## This PR...
+    {{description}}
+
+    ## Considerations and implementation
+    {{implementation}}
+
+  # Markers for special sections (related PRs)
+  # Only change these if you need custom markers
+  markers:
+    related_pr_start: "<!-- RELATED_PR -->"
+    related_pr_end: "<!-- /RELATED_PR -->"
+
+  # Form fields to prompt the user for
+  # Each field creates a {{field_name}} placeholder in the template
+  #
+  # Field options:
+  #   - name:     Field identifier, used as placeholder {{name}}
+  #   - prompt:   Text shown to the user when prompting
+  #   - type:     Input type - "editor" (multi-line) or "text" (single-line)
+  #   - required: If true, field cannot be left empty
+  #   - default:  Optional default value
+  fields:
+    - name: description
+      prompt: "What is this PR doing:"
+      type: editor
+      required: true
+
+    - name: implementation
+      prompt: "Considerations and implementation:"
+      type: editor
+      required: false
+# Example: Custom template with different fields
+# template:
+#   body: |
+#     Related PRs:
+#     <!-- RELATED_PR -->
+#     <!-- /RELATED_PR -->
+#
+#     ## Summary
+#     {{summary}}
+#
+#     ## Changes
+#     {{changes}}
+#
+#     ## Testing
+#     {{testing}}
+#
+#   fields:
+#     - name: summary
+#       prompt: "Brief summary of changes:"
+#       type: text
+#       required: true
+#
+#     - name: changes
+#       prompt: "Detailed list of changes:"
+#       type: editor
+#       required: true
+#
+#     - name: testing
+#       prompt: "How was this tested:"
+#       type: text
+#       required: false
+#       default: "Manual testing"
