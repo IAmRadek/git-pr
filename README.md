@@ -9,7 +9,8 @@ A highly opinionated CLI tool for creating GitHub Pull Requests with automatic r
 - **Reviewer Selection**: Interactive multi-select for choosing reviewers from repository collaborators
 - **Base Branch Detection**: Intelligently suggests base branches based on git history
 - **Tag Autocomplete**: Remembers previously used tags for quick selection
-- **Customizable Templates**: Configure your own PR body template via YAML configuration
+- **Customizable Templates**: Configure your own PR body template and form fields via YAML configuration
+- **Dynamic Form Fields**: Define custom prompts and input types for your PR workflow
 
 ## Installation
 
@@ -36,6 +37,12 @@ git-pr uses a YAML configuration file for customization. The configuration file 
 
 You can specify a custom config directory using the `--config` flag or `GIT_PR_CONFIG` environment variable.
 
+### Generate Default Configuration
+
+```bash
+git-pr --init
+```
+
 ### Configuration File
 
 Create `~/.config/git-pr/config.yaml` with any of the following options:
@@ -44,11 +51,9 @@ Create `~/.config/git-pr/config.yaml` with any of the following options:
 # Jira Integration Settings
 jira:
   # Base URL for Jira ticket links
-  # Example: "https://company.atlassian.net/browse/"
+  # When set and a Jira-style tag is found in commits,
+  # a "Tracked by [TAG](url)" line is prepended to the PR body
   url: "https://yourcompany.atlassian.net/browse/"
-  
-  # Automatically detect Jira tickets from branch/commit names
-  auto_detect: true
 
 # GitHub Settings
 github:
@@ -62,42 +67,65 @@ github:
 
 # PR Template Settings
 template:
-  # The PR body template with placeholders
+  # The PR body template with form field placeholders
   body: |
-    Tracked by <!-- ISSUE_URL -->
     Related PRs:
     <!-- RELATED_PR -->
-    - [ABCD-XXXX](https://example.com/ABCD-XXXX)
     <!-- /RELATED_PR -->
 
     ## This PR...
-
-    <!-- THIS PR -->
+    {{description}}
 
     ## Considerations and implementation
+    {{implementation}}
 
-    <!-- IMPLEMENTATION -->
-
-  # Advanced: Customize placeholder markers (optional)
-  placeholders:
-    issue_url: "<!-- ISSUE_URL -->"
+  # Markers for the related PRs section (HTML comments for invisibility)
+  markers:
     related_pr_start: "<!-- RELATED_PR -->"
     related_pr_end: "<!-- /RELATED_PR -->"
-    description: "<!-- THIS PR -->"
-    implementation: "<!-- IMPLEMENTATION -->"
-    tracking_line_prefix: "Tracked by <!-- ISSUE_URL -->"
+
+  # Form fields to prompt the user for
+  fields:
+    - name: description
+      prompt: "What is this PR doing:"
+      type: editor
+      required: true
+
+    - name: implementation
+      prompt: "Considerations and implementation:"
+      type: editor
+      required: false
 ```
+
+### Form Fields
+
+Form fields define what information to collect when creating a PR. Each field creates a `{{field_name}}` placeholder in the template.
+
+| Option | Description |
+|--------|-------------|
+| `name` | Field identifier, used as placeholder `{{name}}` in template |
+| `prompt` | Text shown to the user when prompting for input |
+| `type` | Input type: `editor` (multi-line, opens external editor) or `text` (single-line) |
+| `required` | If `true`, the field cannot be left empty |
+| `default` | Optional default value to pre-fill |
+
+**Behavior:**
+- Required fields must have a non-empty value
+- Empty optional fields have their entire line removed from the body
+- Fields are prompted in the order they are defined
 
 ### Template Placeholders
 
-The PR body template supports the following placeholders:
-
 | Placeholder | Description |
 |-------------|-------------|
-| `<!-- ISSUE_URL -->` | Replaced with the Jira ticket link (if configured) |
-| `<!-- RELATED_PR -->...<!-- /RELATED_PR -->` | Section that gets updated with related PRs |
-| `<!-- THIS PR -->` | Replaced with the PR description you enter |
-| `<!-- IMPLEMENTATION -->` | Replaced with implementation details you enter |
+| `{{field_name}}` | Replaced with user input for the corresponding form field |
+| `<!-- RELATED_PR -->...<!-- /RELATED_PR -->` | Section that gets updated with related PRs across all matching PRs |
+
+**Jira Tracking:** When `jira.url` is configured AND a Jira-style tag is detected from commits, a tracking link is automatically prepended to the PR body:
+
+```
+Tracked by [TRACK-123](https://yourcompany.atlassian.net/browse/TRACK-123)
+```
 
 ### Environment Variables
 
@@ -153,9 +181,8 @@ The tool will guide you through:
 1. PR title (auto-filled from commit message if tag is detected)
 2. Tag/ticket identifier (with autocomplete from history)
 3. Base branch selection (if multiple candidates)
-4. PR description (opens your editor)
-5. Implementation details (opens your editor)
-6. Reviewer selection (multi-select from available reviewers)
+4. Form fields (as defined in your config)
+5. Reviewer selection (multi-select from available reviewers)
 
 ### Update Related PRs Only
 
@@ -180,6 +207,7 @@ Options:
   -u, --update-only    Only update related PRs without creating a new PR
   -d, --dry-run        Perform a dry run without making any changes
   -c, --config <PATH>  Path to the configuration directory [env: GIT_PR_CONFIG]
+      --init           Generate a default configuration file
   -h, --help           Print help
   -V, --version        Print version
 ```
@@ -211,11 +239,13 @@ src/
 
 3. **Tag Detection**: Looks for patterns like `[TRACK-123]` in commit messages to auto-fill the PR title and tag
 
-4. **PR Creation**: Uses the GitHub CLI to create the PR with your configured template, title, description, and reviewers
+4. **Form Field Collection**: Prompts for each configured form field (description, implementation, or your custom fields)
 
-5. **Related PR Discovery**: Queries GitHub for your recent PRs and filters those with matching tags
+5. **PR Creation**: Uses the GitHub CLI to create the PR with your configured template, filled-in fields, and reviewers
 
-6. **Bulk Update**: Updates the "Related PRs" section in all matching PRs so they reference each other
+6. **Related PR Discovery**: Queries GitHub for your recent PRs and filters those with matching tags
+
+7. **Bulk Update**: Updates the "Related PRs" section in all matching PRs so they reference each other
 
 ## Custom Template Examples
 
@@ -225,33 +255,54 @@ src/
 template:
   body: |
     ## Description
-    <!-- THIS PR -->
-
-    ## Implementation
-    <!-- IMPLEMENTATION -->
+    {{description}}
+  
+  fields:
+    - name: description
+      prompt: "Describe your changes:"
+      type: editor
+      required: true
 ```
 
-### Template with Checklist
+### Template with Testing Field
 
 ```yaml
 template:
   body: |
-    Tracked by <!-- ISSUE_URL -->
-
-    ## Related PRs
+    Related PRs:
     <!-- RELATED_PR -->
     <!-- /RELATED_PR -->
 
-    ## Description
-    <!-- THIS PR -->
+    ## Summary
+    {{summary}}
 
-    ## Implementation Notes
-    <!-- IMPLEMENTATION -->
+    ## Changes
+    {{changes}}
+
+    ## Testing
+    {{testing}}
 
     ## Checklist
     - [ ] Tests added/updated
     - [ ] Documentation updated
     - [ ] Ready for review
+
+  fields:
+    - name: summary
+      prompt: "Brief summary (one line):"
+      type: text
+      required: true
+
+    - name: changes
+      prompt: "Detailed list of changes:"
+      type: editor
+      required: true
+
+    - name: testing
+      prompt: "How was this tested:"
+      type: text
+      required: false
+      default: "Manual testing"
 ```
 
 ### Template with Custom Markers
@@ -259,24 +310,37 @@ template:
 ```yaml
 template:
   body: |
-    **Ticket**: {{ISSUE}}
-    
     {{RELATED_START}}
     {{RELATED_END}}
 
     ### What
-    {{DESCRIPTION}}
+    {{what}}
+
+    ### Why
+    {{why}}
 
     ### How
-    {{IMPLEMENTATION}}
+    {{how}}
 
-  placeholders:
-    issue_url: "{{ISSUE}}"
+  markers:
     related_pr_start: "{{RELATED_START}}"
     related_pr_end: "{{RELATED_END}}"
-    description: "{{DESCRIPTION}}"
-    implementation: "{{IMPLEMENTATION}}"
-    tracking_line_prefix: "**Ticket**: {{ISSUE}}"
+
+  fields:
+    - name: what
+      prompt: "What does this PR do:"
+      type: text
+      required: true
+
+    - name: why
+      prompt: "Why is this change needed:"
+      type: editor
+      required: true
+
+    - name: how
+      prompt: "How is it implemented:"
+      type: editor
+      required: false
 ```
 
 ## License

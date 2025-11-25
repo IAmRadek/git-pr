@@ -1,4 +1,5 @@
 use colored::Colorize;
+use std::collections::HashMap;
 
 use crate::config::{self, Config};
 use crate::error::{Error, Result};
@@ -30,7 +31,7 @@ pub fn run(args: crate::cli::Args) -> Result<()> {
     pr.base = select_base_branch(&branch_info)?;
 
     if !args.update_only {
-        pr = gather_pr_details(pr)?;
+        pr = gather_pr_details(&config, pr)?;
         publish_pr(&config, &pr, args.dry_run)?;
     }
 
@@ -80,29 +81,32 @@ fn select_base_branch(branch_info: &git::BranchInfo) -> Result<String> {
     }
 }
 
-/// Gather PR description, implementation details, and reviewers
-fn gather_pr_details(pr: PullRequest) -> Result<PullRequest> {
-    let description = ui::prompt_description("What is this PR doing:")?;
-    let implementation = ui::prompt_description("Considerations and implementation:")?;
+/// Gather PR details by prompting for each configured form field
+fn gather_pr_details(config: &Config, pr: PullRequest) -> Result<PullRequest> {
+    let mut fields: HashMap<String, String> = HashMap::new();
 
+    // Prompt for each configured field
+    for field in &config.template.fields {
+        match ui::prompt_field(field)? {
+            Some(value) => {
+                fields.insert(field.name.clone(), value);
+            }
+            None => {
+                // Field was optional and left empty, skip it
+            }
+        }
+    }
+
+    // Get reviewers
     let reviewers_list = github::get_available_reviewers().unwrap_or_default();
     let reviewers = ui::prompt_reviewers(reviewers_list)?;
 
-    Ok(pr
-        .with_description(description)
-        .with_implementation(implementation)
-        .with_reviewers(reviewers))
+    Ok(pr.with_fields(fields).with_reviewers(reviewers))
 }
 
 /// Publish the PR to GitHub
 fn publish_pr(config: &Config, pr: &PullRequest, dry_run: bool) -> Result<()> {
-    let body = template::make_body(
-        config,
-        &pr.tag,
-        &pr.is_jira,
-        &pr.description,
-        &pr.implementation,
-    );
+    let body = template::make_body(config, &pr.tag, pr.is_jira, &pr.fields);
 
     match github::publish_pr(
         pr.base.clone(),

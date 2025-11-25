@@ -8,10 +8,9 @@ jira:
   # Base URL for Jira ticket links
   # Example: "https://company.atlassian.net/browse/"
   # Can also be set via JIRA_URL environment variable
+  # When set and a Jira-style tag is found in commits, a tracking link
+  # will be automatically prepended to the PR body
   url: null
-
-  # Automatically detect Jira tickets from branch/commit names
-  auto_detect: true
 
 # GitHub Settings
 github:
@@ -28,35 +27,80 @@ github:
 
 # PR Template Settings
 template:
-  # The PR body template with placeholders
-  # Available placeholders:
-  #   - <!-- ISSUE_URL -->       : Replaced with Jira ticket link
-  #   - <!-- RELATED_PR -->      : Start of related PRs section
-  #   - <!-- /RELATED_PR -->     : End of related PRs section
-  #   - <!-- THIS PR -->         : PR description
-  #   - <!-- IMPLEMENTATION -->  : Implementation details
+  # The PR body template
+  #
+  # Form field placeholders use {{field_name}} syntax and will be replaced
+  # with user input. Empty optional fields will have their line removed.
+  #
+  # Special markers for related PRs section (HTML comments so they're
+  # invisible in rendered markdown but still findable for updates):
+  #   - <!-- RELATED_PR -->   : Start of related PRs section
+  #   - <!-- /RELATED_PR -->  : End of related PRs section
   body: |
-    Tracked by <!-- ISSUE_URL -->
     Related PRs:
     <!-- RELATED_PR -->
-    - [ABCD-XXXX](https://example.com/ABCD-XXXX)
-    - [ABCD-XXXX](https://example.com/ABCD-XXXX)
     <!-- /RELATED_PR -->
 
     ## This PR...
-
-    <!-- THIS PR -->
+    {{description}}
 
     ## Considerations and implementation
+    {{implementation}}
 
-    <!-- IMPLEMENTATION -->
-
-  # Advanced: Customize placeholder markers
-  # Only change these if you need custom markers in your template
-  placeholders:
-    issue_url: "<!-- ISSUE_URL -->"
+  # Markers for special sections (related PRs)
+  # Only change these if you need custom markers
+  markers:
     related_pr_start: "<!-- RELATED_PR -->"
     related_pr_end: "<!-- /RELATED_PR -->"
-    description: "<!-- THIS PR -->"
-    implementation: "<!-- IMPLEMENTATION -->"
-    tracking_line_prefix: "Tracked by <!-- ISSUE_URL -->"
+
+  # Form fields to prompt the user for
+  # Each field creates a {{field_name}} placeholder in the template
+  #
+  # Field options:
+  #   - name:     Field identifier, used as placeholder {{name}}
+  #   - prompt:   Text shown to the user when prompting
+  #   - type:     Input type - "editor" (multi-line) or "text" (single-line)
+  #   - required: If true, field cannot be left empty
+  #   - default:  Optional default value
+  fields:
+    - name: description
+      prompt: "What is this PR doing:"
+      type: editor
+      required: true
+
+    - name: implementation
+      prompt: "Considerations and implementation:"
+      type: editor
+      required: false
+# Example: Custom template with different fields
+# template:
+#   body: |
+#     Related PRs:
+#     <!-- RELATED_PR -->
+#     <!-- /RELATED_PR -->
+#
+#     ## Summary
+#     {{summary}}
+#
+#     ## Changes
+#     {{changes}}
+#
+#     ## Testing
+#     {{testing}}
+#
+#   fields:
+#     - name: summary
+#       prompt: "Brief summary of changes:"
+#       type: text
+#       required: true
+#
+#     - name: changes
+#       prompt: "Detailed list of changes:"
+#       type: editor
+#       required: true
+#
+#     - name: testing
+#       prompt: "How was this tested:"
+#       type: text
+#       required: false
+#       default: "Manual testing"

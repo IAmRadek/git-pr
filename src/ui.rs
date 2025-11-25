@@ -4,6 +4,7 @@ use inquire::ui::{Color, RenderConfig, Styled};
 use inquire::validator::Validation;
 use inquire::{set_global_render_config, CustomUserError, Editor, MultiSelect, Select, Text};
 
+use crate::config::{FieldType, FormField};
 use crate::error::Error;
 use crate::git::BranchInfo;
 use crate::tags::Tags;
@@ -54,12 +55,68 @@ pub fn prompt_base(bases: Vec<String>) -> Result<String, Error> {
         .map_err(map_inquire_error)
 }
 
-/// Prompt for PR description using an editor
-pub fn prompt_description(prompt: &str) -> Result<String, Error> {
-    Editor::new(prompt)
-        .with_formatter(&|x| x.to_string())
-        .prompt()
-        .map_err(map_inquire_error)
+/// Prompt for a single form field based on its configuration
+///
+/// Returns `Ok(None)` if the field is optional and the user provides no input.
+/// Returns `Err` if the field is required and empty, or on cancellation.
+pub fn prompt_field(field: &FormField) -> Result<Option<String>, Error> {
+    let result = match field.field_type {
+        FieldType::Editor => prompt_editor_field(field)?,
+        FieldType::Text => prompt_text_field(field)?,
+    };
+
+    // Handle empty results
+    if result.trim().is_empty() {
+        if field.required {
+            return Err(Error::Prompt(format!(
+                "Field '{}' is required but was left empty",
+                field.name
+            )));
+        }
+        return Ok(None);
+    }
+
+    Ok(Some(result))
+}
+
+/// Prompt using an editor for multi-line input
+fn prompt_editor_field(field: &FormField) -> Result<String, Error> {
+    let mut editor = Editor::new(&field.prompt).with_formatter(&|x| {
+        // Show a preview of the content
+        let preview: String = x.chars().take(50).collect();
+        if x.len() > 50 {
+            format!("{}...", preview)
+        } else {
+            preview
+        }
+    });
+
+    if let Some(default) = &field.default {
+        editor = editor.with_predefined_text(default);
+    }
+
+    editor.prompt().map_err(map_inquire_error)
+}
+
+/// Prompt using single-line text input
+fn prompt_text_field(field: &FormField) -> Result<String, Error> {
+    let mut text = Text::new(&field.prompt);
+
+    if let Some(default) = &field.default {
+        text = text.with_default(default);
+    }
+
+    if field.required {
+        text = text.with_validator(|input: &str| {
+            if input.trim().is_empty() {
+                Ok(Validation::Invalid("This field is required".into()))
+            } else {
+                Ok(Validation::Valid)
+            }
+        });
+    }
+
+    text.prompt().map_err(map_inquire_error)
 }
 
 /// Prompt for selecting reviewers from a list
