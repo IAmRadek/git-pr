@@ -144,16 +144,41 @@ pub fn get_available_reviewers() -> Result<Vec<String>, String> {
     Ok(logins)
 }
 
+/// Get the authenticated GitHub user from the gh CLI
+///
+/// Uses `gh api user` to get the currently authenticated user's login.
+pub fn get_authenticated_user() -> Result<String, String> {
+    let output = Command::new("gh")
+        .args(["api", "user", "--jq", ".login"])
+        .output()
+        .map_err(|e| format!("Failed to execute gh command: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to get authenticated user: {}", stderr));
+    }
+
+    let login = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if login.is_empty() {
+        return Err("No authenticated user found. Run 'gh auth login' first.".to_string());
+    }
+
+    Ok(login)
+}
+
 /// Get the recent pull requests for the current user
 ///
 /// # Arguments
-/// * `github_user` - The GitHub username to query PRs for. Falls back to GITHUB_USER env var if None.
+/// * `github_user` - The GitHub username to query PRs for. Falls back to GITHUB_USER env var,
+///   then to the authenticated gh CLI user if None.
 pub fn get_user_prs(github_user: Option<&str>) -> Result<Vec<PullRequest>, String> {
     let login = match github_user {
         Some(user) if !user.is_empty() => user.to_string(),
-        _ => std::env::var("GITHUB_USER").map_err(|_| {
-            "GitHub user not configured. Set github.user in config or GITHUB_USER environment variable".to_string()
-        })?,
+        _ => std::env::var("GITHUB_USER")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(Ok)
+            .unwrap_or_else(get_authenticated_user)?,
     };
 
     let output = Command::new("gh")
