@@ -1,6 +1,6 @@
 use colored::Colorize;
 
-use crate::config;
+use crate::config::{self, Config};
 use crate::error::{Error, Result};
 use crate::git;
 use crate::github;
@@ -13,23 +13,28 @@ use crate::ui;
 pub fn run(args: crate::cli::Args) -> Result<()> {
     ui::init_render_config();
 
+    // Ensure config directory exists and load configuration
+    config::ensure_config_dir_exists(std::path::Path::new(&args.config));
+    let config = Config::load(&args.config)?;
+
     let branch_info = git::get_branch_bases_and_commits()?;
 
     if branch_info.commits.is_empty() {
         return Err(Error::NoCommits);
     }
 
-    let mut tags = Tags::from_file(config::get_tags_path())?;
+    let tags_path = config::get_tags_path_with_dir(&args.config);
+    let mut tags = Tags::from_file(tags_path)?;
     let mut pr = build_pr_from_branch(&branch_info, &mut tags)?;
 
     pr.base = select_base_branch(&branch_info)?;
 
     if !args.update_only {
         pr = gather_pr_details(pr)?;
-        publish_pr(&pr, args.dry_run)?;
+        publish_pr(&config, &pr, args.dry_run)?;
     }
 
-    update_related_prs(&pr, args.dry_run)?;
+    update_related_prs(&config, &pr, args.dry_run)?;
 
     Ok(())
 }
@@ -90,8 +95,14 @@ fn gather_pr_details(pr: PullRequest) -> Result<PullRequest> {
 }
 
 /// Publish the PR to GitHub
-fn publish_pr(pr: &PullRequest, dry_run: bool) -> Result<()> {
-    let body = template::make_body(&pr.tag, &pr.is_jira, &pr.description, &pr.implementation);
+fn publish_pr(config: &Config, pr: &PullRequest, dry_run: bool) -> Result<()> {
+    let body = template::make_body(
+        config,
+        &pr.tag,
+        &pr.is_jira,
+        &pr.description,
+        &pr.implementation,
+    );
 
     match github::publish_pr(
         pr.base.clone(),
@@ -109,8 +120,8 @@ fn publish_pr(pr: &PullRequest, dry_run: bool) -> Result<()> {
 }
 
 /// Find and update related PRs with the same tag
-fn update_related_prs(pr: &PullRequest, dry_run: bool) -> Result<()> {
-    let related_prs = match github::get_user_prs() {
+fn update_related_prs(config: &Config, pr: &PullRequest, dry_run: bool) -> Result<()> {
+    let related_prs = match github::get_user_prs(config.github_user().as_deref()) {
         Ok(prs) => filter_related_prs(prs, &pr.tag),
         Err(err) => {
             return Err(Error::GitHubCli(err));
@@ -129,8 +140,12 @@ fn update_related_prs(pr: &PullRequest, dry_run: bool) -> Result<()> {
     );
 
     for related_pr in &related_prs {
-        let updated_body =
-            template::replace_related_prs(&related_pr.body, &related_pr.number, &related_prs);
+        let updated_body = template::replace_related_prs(
+            config,
+            &related_pr.body,
+            &related_pr.number,
+            &related_prs,
+        );
 
         match github::update_pr(
             &related_pr.number,

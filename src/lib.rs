@@ -15,5 +15,6 @@ pub mod template;
 pub mod ui;
 
 // Re-export commonly used types
+pub use config::Config;
 pub use error::{Error, Result};
 pub use pr::PullRequest;

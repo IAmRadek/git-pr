@@ -1,0 +1,62 @@
+# git-pr Configuration File
+# =========================
+# Place this file at ~/.config/git-pr/config.yaml
+# or specify a custom config directory with --config or GIT_PR_CONFIG env var
+
+# Jira Integration Settings
+jira:
+  # Base URL for Jira ticket links
+  # Example: "https://company.atlassian.net/browse/"
+  # Can also be set via JIRA_URL environment variable
+  url: null
+
+  # Automatically detect Jira tickets from branch/commit names
+  auto_detect: true
+
+# GitHub Settings
+github:
+  # Your GitHub username (used for fetching your related PRs)
+  # Can also be set via GITHUB_USER environment variable
+  user: null
+
+  # Default reviewers to suggest when creating PRs
+  default_reviewers: []
+  # Example:
+  # default_reviewers:
+  #   - teammate1
+  #   - teammate2
+
+# PR Template Settings
+template:
+  # The PR body template with placeholders
+  # Available placeholders:
+  #   - <!-- ISSUE_URL -->       : Replaced with Jira ticket link
+  #   - <!-- RELATED_PR -->      : Start of related PRs section
+  #   - <!-- /RELATED_PR -->     : End of related PRs section
+  #   - <!-- THIS PR -->         : PR description
+  #   - <!-- IMPLEMENTATION -->  : Implementation details
+  body: |
+    Tracked by <!-- ISSUE_URL -->
+    Related PRs:
+    <!-- RELATED_PR -->
+    - [ABCD-XXXX](https://example.com/ABCD-XXXX)
+    - [ABCD-XXXX](https://example.com/ABCD-XXXX)
+    <!-- /RELATED_PR -->
+
+    ## This PR...
+
+    <!-- THIS PR -->
+
+    ## Considerations and implementation
+
+    <!-- IMPLEMENTATION -->
+
+  # Advanced: Customize placeholder markers
+  # Only change these if you need custom markers in your template
+  placeholders:
+    issue_url: "<!-- ISSUE_URL -->"
+    related_pr_start: "<!-- RELATED_PR -->"
+    related_pr_end: "<!-- /RELATED_PR -->"
+    description: "<!-- THIS PR -->"
+    implementation: "<!-- IMPLEMENTATION -->"
+    tracking_line_prefix: "Tracked by <!-- ISSUE_URL -->"

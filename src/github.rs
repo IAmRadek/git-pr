@@ -146,10 +146,15 @@ pub fn get_available_reviewers() -> Result<Vec<String>, String> {
 
 /// Get the recent pull requests for the current user
 ///
-/// Requires the GITHUB_USER environment variable to be set.
-pub fn get_user_prs() -> Result<Vec<PullRequest>, String> {
-    let login = std::env::var("GITHUB_USER")
-        .map_err(|_| "Environment variable GITHUB_USER not set".to_string())?;
+/// # Arguments
+/// * `github_user` - The GitHub username to query PRs for. Falls back to GITHUB_USER env var if None.
+pub fn get_user_prs(github_user: Option<&str>) -> Result<Vec<PullRequest>, String> {
+    let login = match github_user {
+        Some(user) if !user.is_empty() => user.to_string(),
+        _ => std::env::var("GITHUB_USER").map_err(|_| {
+            "GitHub user not configured. Set github.user in config or GITHUB_USER environment variable".to_string()
+        })?,
+    };
 
     let output = Command::new("gh")
         .args([

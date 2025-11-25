@@ -9,6 +9,7 @@ A highly opinionated CLI tool for creating GitHub Pull Requests with automatic r
 - **Reviewer Selection**: Interactive multi-select for choosing reviewers from repository collaborators
 - **Base Branch Detection**: Intelligently suggests base branches based on git history
 - **Tag Autocomplete**: Remembers previously used tags for quick selection
+- **Customizable Templates**: Configure your own PR body template via YAML configuration
 
 ## Installation
 
@@ -27,19 +28,109 @@ cargo install --path .
 
 ## Configuration
 
+git-pr uses a YAML configuration file for customization. The configuration file is located at:
+
+```
+~/.config/git-pr/config.yaml
+```
+
+You can specify a custom config directory using the `--config` flag or `GIT_PR_CONFIG` environment variable.
+
+### Configuration File
+
+Create `~/.config/git-pr/config.yaml` with any of the following options:
+
+```yaml
+# Jira Integration Settings
+jira:
+  # Base URL for Jira ticket links
+  # Example: "https://company.atlassian.net/browse/"
+  url: "https://yourcompany.atlassian.net/browse/"
+  
+  # Automatically detect Jira tickets from branch/commit names
+  auto_detect: true
+
+# GitHub Settings
+github:
+  # Your GitHub username (used for fetching your related PRs)
+  user: "your-username"
+  
+  # Default reviewers to suggest when creating PRs
+  default_reviewers:
+    - teammate1
+    - teammate2
+
+# PR Template Settings
+template:
+  # The PR body template with placeholders
+  body: |
+    Tracked by <!-- ISSUE_URL -->
+    Related PRs:
+    <!-- RELATED_PR -->
+    - [ABCD-XXXX](https://example.com/ABCD-XXXX)
+    <!-- /RELATED_PR -->
+
+    ## This PR...
+
+    <!-- THIS PR -->
+
+    ## Considerations and implementation
+
+    <!-- IMPLEMENTATION -->
+
+  # Advanced: Customize placeholder markers (optional)
+  placeholders:
+    issue_url: "<!-- ISSUE_URL -->"
+    related_pr_start: "<!-- RELATED_PR -->"
+    related_pr_end: "<!-- /RELATED_PR -->"
+    description: "<!-- THIS PR -->"
+    implementation: "<!-- IMPLEMENTATION -->"
+    tracking_line_prefix: "Tracked by <!-- ISSUE_URL -->"
+```
+
+### Template Placeholders
+
+The PR body template supports the following placeholders:
+
+| Placeholder | Description |
+|-------------|-------------|
+| `<!-- ISSUE_URL -->` | Replaced with the Jira ticket link (if configured) |
+| `<!-- RELATED_PR -->...<!-- /RELATED_PR -->` | Section that gets updated with related PRs |
+| `<!-- THIS PR -->` | Replaced with the PR description you enter |
+| `<!-- IMPLEMENTATION -->` | Replaced with implementation details you enter |
+
 ### Environment Variables
 
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `GITHUB_USER` | Yes | Your GitHub username (for fetching related PRs) |
-| `JIRA_URL` | No | Base URL for Jira ticket links (e.g., `https://company.atlassian.net/browse/`) |
-| `GIT_PR_CONFIG` | No | Custom config directory path (default: `~/.config/git-pr`) |
+Configuration values can also be set via environment variables. Environment variables are used as fallbacks when the corresponding config file value is not set.
+
+| Variable | Description |
+|----------|-------------|
+| `GITHUB_USER` | Your GitHub username (fallback for `github.user`) |
+| `JIRA_URL` | Base URL for Jira ticket links (fallback for `jira.url`) |
+| `GIT_PR_CONFIG` | Custom config directory path (default: `~/.config/git-pr`) |
 
 ### Example Setup
+
+Minimal setup using environment variables:
 
 ```bash
 export GITHUB_USER="your-username"
 export JIRA_URL="https://yourcompany.atlassian.net/browse/"
+```
+
+Or create a config file for more options:
+
+```bash
+mkdir -p ~/.config/git-pr
+cat > ~/.config/git-pr/config.yaml << 'EOF'
+jira:
+  url: "https://yourcompany.atlassian.net/browse/"
+
+github:
+  user: "your-username"
+  default_reviewers:
+    - teammate1
+EOF
 ```
 
 ## Usage
@@ -101,7 +192,7 @@ src/
 ├── main.rs       # Thin CLI entry point
 ├── app.rs        # Main application orchestration
 ├── cli.rs        # Command-line argument parsing (clap)
-├── config.rs     # Configuration and path management
+├── config.rs     # Configuration loading and management
 ├── error.rs      # Error types with thiserror
 ├── git.rs        # Git operations using git2
 ├── github.rs     # GitHub API interactions via gh CLI
@@ -114,36 +205,78 @@ src/
 
 ## How It Works
 
-1. **Branch Analysis**: Scans the current branch's commits to find potential base branches and extract commit messages
+1. **Configuration Loading**: Reads settings from `~/.config/git-pr/config.yaml` with environment variable fallbacks
 
-2. **Tag Detection**: Looks for patterns like `[TRACK-123]` in commit messages to auto-fill the PR title and tag
+2. **Branch Analysis**: Scans the current branch's commits to find potential base branches and extract commit messages
 
-3. **PR Creation**: Uses the GitHub CLI to create the PR with your title, description, and reviewers
+3. **Tag Detection**: Looks for patterns like `[TRACK-123]` in commit messages to auto-fill the PR title and tag
 
-4. **Related PR Discovery**: Queries GitHub for your recent PRs and filters those with matching tags
+4. **PR Creation**: Uses the GitHub CLI to create the PR with your configured template, title, description, and reviewers
 
-5. **Bulk Update**: Updates the "Related PRs" section in all matching PRs so they reference each other
+5. **Related PR Discovery**: Queries GitHub for your recent PRs and filters those with matching tags
 
-## PR Template
+6. **Bulk Update**: Updates the "Related PRs" section in all matching PRs so they reference each other
 
-The generated PR body follows this structure:
+## Custom Template Examples
 
-```markdown
-Tracked by [TRACK-123](https://jira.example.com/browse/TRACK-123)
+### Minimal Template
 
-Related PRs:
-<!-- RELATED_PR -->
-- owner/repo/pull/1 - (this pr)
-- owner/repo/pull/2
-<!-- /RELATED_PR -->
+```yaml
+template:
+  body: |
+    ## Description
+    <!-- THIS PR -->
 
-## This PR...
+    ## Implementation
+    <!-- IMPLEMENTATION -->
+```
 
-[Your description here]
+### Template with Checklist
 
-## Considerations and implementation
+```yaml
+template:
+  body: |
+    Tracked by <!-- ISSUE_URL -->
 
-[Your implementation details here]
+    ## Related PRs
+    <!-- RELATED_PR -->
+    <!-- /RELATED_PR -->
+
+    ## Description
+    <!-- THIS PR -->
+
+    ## Implementation Notes
+    <!-- IMPLEMENTATION -->
+
+    ## Checklist
+    - [ ] Tests added/updated
+    - [ ] Documentation updated
+    - [ ] Ready for review
+```
+
+### Template with Custom Markers
+
+```yaml
+template:
+  body: |
+    **Ticket**: {{ISSUE}}
+    
+    {{RELATED_START}}
+    {{RELATED_END}}
+
+    ### What
+    {{DESCRIPTION}}
+
+    ### How
+    {{IMPLEMENTATION}}
+
+  placeholders:
+    issue_url: "{{ISSUE}}"
+    related_pr_start: "{{RELATED_START}}"
+    related_pr_end: "{{RELATED_END}}"
+    description: "{{DESCRIPTION}}"
+    implementation: "{{IMPLEMENTATION}}"
+    tracking_line_prefix: "**Ticket**: {{ISSUE}}"
 ```
 
 ## License

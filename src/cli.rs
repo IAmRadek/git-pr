@@ -28,6 +28,14 @@ pub struct Args {
     #[serde(skip)]
     pub dry_run: bool,
 
+    /// Initialize a sample configuration file
+    ///
+    /// Creates a config.yaml file in the configuration directory with
+    /// documented default values.
+    #[arg(long, default_value_t = false)]
+    #[serde(skip)]
+    pub init: bool,
+
     /// Path to the configuration directory
     ///
     /// Defaults to ~/.config/git-pr. Can also be set via the GIT_PR_CONFIG
