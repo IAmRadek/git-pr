@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 /// Represents a Pull Request being created or updated
 #[derive(Debug, Default, Clone)]
 pub struct PullRequest {
@@ -7,10 +5,10 @@ pub struct PullRequest {
     pub title: String,
     /// The tag/ticket identifier (e.g., "TRACK-123")
     pub tag: String,
-    /// Whether this PR is tracked by a Jira ticket (tag found in commit)
+    /// Whether this PR is tracked by a Jira ticket
     pub is_jira: bool,
-    /// Dynamic form fields filled in by the user (field_name -> value)
-    pub fields: HashMap<String, String>,
+    /// The full PR body as authored in the editor
+    pub body: String,
     /// List of GitHub usernames to request review from
     pub reviewers: Vec<String>,
     /// The base branch to merge into
@@ -41,15 +39,9 @@ impl PullRequest {
         self
     }
 
-    /// Sets a form field value and returns self for chaining
-    pub fn with_field(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
-        self.fields.insert(name.into(), value.into());
-        self
-    }
-
-    /// Sets all form fields and returns self for chaining
-    pub fn with_fields(mut self, fields: HashMap<String, String>) -> Self {
-        self.fields = fields;
+    /// Sets the full PR body and returns self for chaining
+    pub fn with_body(mut self, body: impl Into<String>) -> Self {
+        self.body = body.into();
         self
     }
 
@@ -64,11 +56,6 @@ impl PullRequest {
         self.base = base.into();
         self
     }
-
-    /// Gets a field value by name
-    pub fn get_field(&self, name: &str) -> Option<&str> {
-        self.fields.get(name).map(|s| s.as_str())
-    }
 }
 
 #[cfg(test)]
@@ -81,30 +68,21 @@ mod tests {
             .with_title("[TEST-123]: Test PR")
             .with_tag("TEST-123")
             .with_jira(true)
-            .with_field("description", "This is a test")
-            .with_field("notes", "Some notes")
+            .with_body("PR body")
             .with_reviewers(vec!["user1".into(), "user2".into()])
             .with_base("main");
 
         assert_eq!(pr.title, "[TEST-123]: Test PR");
         assert_eq!(pr.tag, "TEST-123");
         assert!(pr.is_jira);
-        assert_eq!(pr.get_field("description"), Some("This is a test"));
-        assert_eq!(pr.get_field("notes"), Some("Some notes"));
+        assert_eq!(pr.body, "PR body");
         assert_eq!(pr.reviewers, vec!["user1", "user2"]);
         assert_eq!(pr.base, "main");
     }
 
     #[test]
-    fn test_with_fields_hashmap() {
-        let mut fields = HashMap::new();
-        fields.insert("field1".to_string(), "value1".to_string());
-        fields.insert("field2".to_string(), "value2".to_string());
-
-        let pr = PullRequest::new().with_fields(fields);
-
-        assert_eq!(pr.get_field("field1"), Some("value1"));
-        assert_eq!(pr.get_field("field2"), Some("value2"));
-        assert_eq!(pr.get_field("nonexistent"), None);
+    fn test_with_body() {
+        let pr = PullRequest::new().with_body("Body text");
+        assert_eq!(pr.body, "Body text");
     }
 }

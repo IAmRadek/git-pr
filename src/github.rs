@@ -99,6 +99,11 @@ struct Response<D> {
     data: D,
 }
 
+#[derive(Deserialize)]
+struct ViewerLogin {
+    login: String,
+}
+
 /// Get the list of available reviewers for the current repository
 ///
 /// Uses the GitHub CLI to query the GraphQL API for assignable users.
@@ -151,9 +156,7 @@ pub fn get_available_reviewers() -> Result<Vec<String>, String> {
 pub fn get_user_prs(github_user: Option<&str>) -> Result<Vec<PullRequest>, String> {
     let login = match github_user {
         Some(user) if !user.is_empty() => user.to_string(),
-        _ => std::env::var("GITHUB_USER").map_err(|_| {
-            "GitHub user not configured. Set github.user in config or GITHUB_USER environment variable".to_string()
-        })?,
+        _ => current_user_login()?,
     };
 
     let output = Command::new("gh")
@@ -186,6 +189,36 @@ pub fn get_user_prs(github_user: Option<&str>) -> Result<Vec<PullRequest>, Strin
         .collect();
 
     Ok(prs)
+}
+
+fn current_user_login() -> Result<String, String> {
+    if let Ok(user) = std::env::var("GITHUB_USER") {
+        if !user.is_empty() {
+            return Ok(user);
+        }
+    }
+
+    let output = Command::new("gh")
+        .args(["api", "user"])
+        .output()
+        .map_err(|e| format!("Failed to execute gh command: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Failed to determine authenticated GitHub user: {}",
+            stderr.trim()
+        ));
+    }
+
+    let user: ViewerLogin = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("Failed to parse authenticated GitHub user: {}", e))?;
+
+    if user.login.is_empty() {
+        return Err("Authenticated GitHub user login is empty".to_string());
+    }
+
+    Ok(user.login)
 }
 
 /// Parse a PR URL to extract the PR number and resource path
@@ -287,28 +320,25 @@ pub fn publish_pr(
     let reviewers_str = reviewers.join(",");
 
     if dry_run {
+        let reviewer_arg = if reviewers_str.is_empty() {
+            String::new()
+        } else {
+            format!(" -r {}", reviewers_str)
+        };
         println!(
-            "gh pr create -B {} -t {:?} -a @me -b {:?} -r {}",
-            base, title, body, reviewers_str
+            "gh pr create -B {} -t {:?} -a @me -b {:?}{}",
+            base, title, body, reviewer_arg
         );
         return Ok("Dry run - no PR created".into());
     }
 
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "create",
-            "-B",
-            &base,
-            "-t",
-            &title,
-            "-a",
-            "@me",
-            "-b",
-            &body,
-            "-r",
-            &reviewers_str,
-        ])
+    let mut command = Command::new("gh");
+    command.args(["pr", "create", "-B", &base, "-t", &title, "-a", "@me", "-b", &body]);
+    if !reviewers_str.is_empty() {
+        command.args(["-r", &reviewers_str]);
+    }
+
+    let output = command
         .output()
         .map_err(|e| format!("Failed to execute gh command: {}", e))?;
 
