@@ -7,7 +7,8 @@ use lazy_static::lazy_static;
 use regex::Regex;
 
 lazy_static! {
-    static ref PATTERN: Regex = Regex::new(r"\[(\w+\-?)*]").unwrap();
+    static ref PATTERN: Regex = Regex::new(r"\[(?P<bracketed>[A-Z0-9_]+(?:-[A-Z0-9_]+)*)\]").unwrap();
+    static ref BARE_PATTERN: Regex = Regex::new(r"^[A-Z0-9_]+(?:-[A-Z0-9_]+)*$").unwrap();
 }
 
 /// Extract a tag from a list of commit messages
@@ -23,8 +24,8 @@ pub fn extract_from_vec(commits: Vec<String>) -> Option<(String, String)> {
 
 /// Extract a tag from a string (e.g., "[TRACK-123]: message" -> "TRACK-123")
 pub fn extract_from_str(message: &str) -> Option<String> {
-    if let Some(m) = PATTERN.find(message) {
-        return Some(m.as_str().replace(['[', ']'], ""));
+    if let Some(captures) = PATTERN.captures(message) {
+        return captures.name("bracketed").map(|m| m.as_str().to_string());
     }
     None
 }
@@ -66,7 +67,7 @@ impl Tags {
     pub fn validator(
         ticket: &str,
     ) -> Result<inquire::validator::Validation, inquire::CustomUserError> {
-        if PATTERN.is_match(ticket) {
+        if BARE_PATTERN.is_match(ticket.trim()) {
             Ok(inquire::validator::Validation::Valid)
         } else {
             Ok(inquire::validator::Validation::Invalid(

@@ -287,28 +287,25 @@ pub fn publish_pr(
     let reviewers_str = reviewers.join(",");
 
     if dry_run {
+        let reviewer_arg = if reviewers_str.is_empty() {
+            String::new()
+        } else {
+            format!(" -r {}", reviewers_str)
+        };
         println!(
-            "gh pr create -B {} -t {:?} -a @me -b {:?} -r {}",
-            base, title, body, reviewers_str
+            "gh pr create -B {} -t {:?} -a @me -b {:?}{}",
+            base, title, body, reviewer_arg
         );
         return Ok("Dry run - no PR created".into());
     }
 
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "create",
-            "-B",
-            &base,
-            "-t",
-            &title,
-            "-a",
-            "@me",
-            "-b",
-            &body,
-            "-r",
-            &reviewers_str,
-        ])
+    let mut command = Command::new("gh");
+    command.args(["pr", "create", "-B", &base, "-t", &title, "-a", "@me", "-b", &body]);
+    if !reviewers_str.is_empty() {
+        command.args(["-r", &reviewers_str]);
+    }
+
+    let output = command
         .output()
         .map_err(|e| format!("Failed to execute gh command: {}", e))?;
 
