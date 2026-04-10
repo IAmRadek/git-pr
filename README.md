@@ -86,7 +86,14 @@ Ticket: TRACK-123
 Jira: https://yourcompany.atlassian.net/browse/TRACK-123
 ```
 
-That block is only a convenience. You can move or copy it anywhere in the template once the editor opens.
+If the resolved template does not already contain the related-PR marker block, `git-pr` also prepends:
+
+```text
+<!-- RELATED_PR -->
+<!-- /RELATED_PR -->
+```
+
+That prepended block is only a convenience. You can move or copy it anywhere in the template once the editor opens.
 
 ## Usage
 

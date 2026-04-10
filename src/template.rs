@@ -25,9 +25,7 @@ pub fn resolve_body_template(config: &Config) -> String {
 
 pub fn build_editor_body(config: &Config, tag: &str, is_jira: bool) -> String {
     let template = resolve_body_template(config);
-    let mut lines = vec![
-        format!("Ticket: {}", tag),
-    ];
+    let mut lines = vec![format!("Ticket: {}", tag)];
 
     if is_jira {
         if let Some(jira_url) = config.jira_url() {
@@ -35,9 +33,20 @@ pub fn build_editor_body(config: &Config, tag: &str, is_jira: bool) -> String {
         }
     }
 
+    if !template_contains_related_pr_markers(&template, config) {
+        lines.push(String::new());
+        lines.push(config.template.markers.related_pr_start.clone());
+        lines.push(config.template.markers.related_pr_end.clone());
+    }
+
     lines.push(String::new());
     lines.push(template);
     lines.join("\n")
+}
+
+fn template_contains_related_pr_markers(template: &str, config: &Config) -> bool {
+    let markers = &config.template.markers;
+    template.contains(&markers.related_pr_start) && template.contains(&markers.related_pr_end)
 }
 
 fn find_repo_template() -> Option<PathBuf> {
@@ -114,6 +123,31 @@ mod tests {
 
         assert!(body.contains("Ticket: TRACK-123"));
         assert!(!body.contains("Jira:"));
+        assert_eq!(body.matches("<!-- RELATED_PR -->").count(), 1);
+        assert_eq!(body.matches("<!-- /RELATED_PR -->").count(), 1);
+    }
+
+    #[test]
+    fn test_build_editor_body_prepends_markers_when_template_lacks_them() {
+        let mut config = Config::default();
+        config.template.body = "## Summary\n".to_string();
+
+        let body = build_editor_body(&config, "TRACK-123", false);
+
+        assert!(body.contains("Ticket: TRACK-123"));
+        assert!(body.contains("<!-- RELATED_PR -->"));
+        assert!(body.contains("<!-- /RELATED_PR -->"));
+        assert!(body.contains("## Summary"));
+    }
+
+    #[test]
+    fn test_build_editor_body_avoids_duplicate_markers() {
+        let config = Config::default();
+
+        let body = build_editor_body(&config, "TRACK-123", false);
+
+        assert_eq!(body.matches("<!-- RELATED_PR -->").count(), 1);
+        assert_eq!(body.matches("<!-- /RELATED_PR -->").count(), 1);
     }
 
     #[test]
