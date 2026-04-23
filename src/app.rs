@@ -23,7 +23,18 @@ pub fn run(args: crate::cli::Args) -> Result<()> {
 
     let tags_path = config::get_tags_path_with_dir(&args.config);
     let mut tags = Tags::from_file(tags_path)?;
-    let mut pr = build_pr_from_branch(&branch_info, &mut tags)?;
+
+    // In --update-only mode there are no new commits with a tag, so look up the
+    // existing PR on GitHub and pull the tag from its title instead.
+    let github_tag = if args.update_only {
+        github::get_current_branch_pr()
+            .ok()
+            .and_then(|p| crate::tags::extract_from_str(&p.title))
+    } else {
+        None
+    };
+
+    let mut pr = build_pr_from_branch(&branch_info, &mut tags, github_tag)?;
 
     pr.base = select_base_branch(&branch_info)?;
 
@@ -39,7 +50,17 @@ pub fn run(args: crate::cli::Args) -> Result<()> {
     Ok(())
 }
 
-fn build_pr_from_branch(branch_info: &git::BranchInfo, tags: &mut Tags) -> Result<PullRequest> {
+fn build_pr_from_branch(
+    branch_info: &git::BranchInfo,
+    tags: &mut Tags,
+    github_tag: Option<String>,
+) -> Result<PullRequest> {
+    if let Some(tag) = github_tag {
+        tags.add_and_save(tag.clone())?;
+        println!("{} PR Tag: {}", ">".bright_green(), tag.bright_cyan());
+        return Ok(PullRequest::new().with_tag(tag).with_jira(true));
+    }
+
     let found_tag = crate::tags::extract_from_vec(branch_info.commits.clone());
 
     if let Some((tag, commit)) = found_tag {

@@ -260,6 +260,53 @@ pub fn parse_pr_url(url: &str) -> Option<(u32, String)> {
     Some((number, resource_path))
 }
 
+/// Fetch the open PR for the current branch, if one exists
+pub fn get_current_branch_pr() -> Result<PullRequest, String> {
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            "--json",
+            "id,title,number,body,headRefName,baseRefName,url",
+        ])
+        .output()
+        .map_err(|e| format!("Failed to execute gh command: {}", e))?;
+
+    if !output.status.success() {
+        return Err("No PR found for current branch".to_string());
+    }
+
+    #[derive(Deserialize)]
+    struct PrView {
+        id: String,
+        title: String,
+        number: u32,
+        body: String,
+        #[serde(alias = "headRefName")]
+        head_ref_name: String,
+        #[serde(alias = "baseRefName")]
+        base_ref_name: String,
+        url: String,
+    }
+
+    let pr_view: PrView = serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("Failed to parse PR response: {}", e))?;
+
+    let resource_path = parse_pr_url(&pr_view.url)
+        .map(|(_, path)| path)
+        .unwrap_or_default();
+
+    Ok(PullRequest {
+        id: pr_view.id,
+        title: pr_view.title,
+        resource_path,
+        number: pr_view.number,
+        body: pr_view.body,
+        head_ref_name: pr_view.head_ref_name,
+        base_ref_name: pr_view.base_ref_name,
+    })
+}
+
 /// Fetch a single PR by number from the current repository
 ///
 /// # Arguments
