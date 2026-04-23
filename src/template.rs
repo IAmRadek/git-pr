@@ -167,6 +167,8 @@ More text"#;
                 resource_path: "/owner/repo/pull/1".into(),
                 number: 1,
                 body: String::new(),
+                head_ref_name: String::new(),
+                base_ref_name: String::new(),
             },
             PullRequest {
                 id: "2".into(),
@@ -174,6 +176,8 @@ More text"#;
                 resource_path: "/owner/repo/pull/2".into(),
                 number: 2,
                 body: String::new(),
+                head_ref_name: String::new(),
+                base_ref_name: String::new(),
             },
         ];
 
@@ -202,6 +206,8 @@ More text"#;
             resource_path: "/owner/repo/pull/1".into(),
             number: 1,
             body: String::new(),
+            head_ref_name: String::new(),
+            base_ref_name: String::new(),
         }];
 
         let result = replace_related_prs(&config, body, &1, &related_prs);

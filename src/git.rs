@@ -17,6 +17,7 @@ pub fn get_repository() -> Result<Repository, Error> {
 /// Information about the current branch including potential base branches and commits
 #[derive(Debug, Clone)]
 pub struct BranchInfo {
+    pub current_branch: String,
     pub bases: Vec<String>,
     pub commits: Vec<String>,
 }
@@ -104,7 +105,7 @@ pub fn get_branch_bases_and_commits() -> Result<BranchInfo, Error> {
         collect_all_branch_commits(&repo, current_branch)?
     };
 
-    Ok(BranchInfo { bases, commits })
+    Ok(BranchInfo { current_branch: current_branch.to_string(), bases, commits })
 }
 
 fn collect_commits_since(repo: &Repository, head_oid: Oid, base_oid: Oid) -> Result<Vec<String>, Error> {

@@ -34,7 +34,7 @@ pub fn run(args: crate::cli::Args) -> Result<()> {
         created_pr_number = publish_pr(&pr, args.dry_run)?;
     }
 
-    update_related_prs(&config, &pr, created_pr_number, args.dry_run)?;
+    update_related_prs(&config, &branch_info, &pr, created_pr_number, args.dry_run)?;
 
     Ok(())
 }
@@ -118,12 +118,16 @@ fn publish_pr(pr: &PullRequest, dry_run: bool) -> Result<Option<u32>> {
 
 fn update_related_prs(
     config: &Config,
+    branch_info: &git::BranchInfo,
     pr: &PullRequest,
     created_pr_number: Option<u32>,
     dry_run: bool,
 ) -> Result<()> {
     let mut related_prs = match github::get_user_prs(config.github_user().as_deref()) {
-        Ok(prs) => filter_related_prs(prs, &pr.tag),
+        Ok(all_prs) => {
+            let tags = collect_stack_tags(&all_prs, branch_info, &pr.tag);
+            filter_related_prs_by_tags(all_prs, &tags)
+        }
         Err(err) => {
             return Err(Error::GitHubCli(err));
         }
@@ -195,25 +199,176 @@ fn update_related_prs(
     Ok(())
 }
 
-fn filter_related_prs(prs: Vec<github::PullRequest>, tag: &str) -> Vec<github::PullRequest> {
-    prs.into_iter()
-        .filter(|pr| {
-            if !pr.title.contains(tag) {
-                return false;
-            }
+fn collect_stack_tags(
+    all_prs: &[github::PullRequest],
+    branch_info: &git::BranchInfo,
+    current_tag: &str,
+) -> Vec<String> {
+    use std::collections::{HashMap, HashSet};
 
-            match crate::tags::extract_from_str(&pr.title) {
-                Some(extracted_tag) => extracted_tag == tag,
-                None => {
-                    println!(
-                        "{} {} {}",
-                        "x".bright_red(),
-                        pr.title.bright_cyan(),
-                        "No tag found".bright_red()
-                    );
-                    false
+    let pr_by_head: HashMap<&str, &github::PullRequest> =
+        all_prs.iter().map(|pr| (pr.head_ref_name.as_str(), pr)).collect();
+
+    let mut prs_by_base: HashMap<&str, Vec<&github::PullRequest>> = HashMap::new();
+    for pr in all_prs {
+        prs_by_base.entry(pr.base_ref_name.as_str()).or_default().push(pr);
+    }
+
+    let mut tags: HashSet<String> = HashSet::new();
+    tags.insert(current_tag.to_string());
+
+    // Walk up: follow base branch -> its PR -> that PR's base -> etc.
+    if let Some(first_base) = branch_info.bases.first() {
+        let mut branch = first_base.as_str();
+        let mut visited: HashSet<&str> = HashSet::new();
+        loop {
+            if !visited.insert(branch) {
+                break;
+            }
+            match pr_by_head.get(branch) {
+                Some(pr) => {
+                    if let Some(tag) = crate::tags::extract_from_str(&pr.title) {
+                        tags.insert(tag);
+                    }
+                    branch = pr.base_ref_name.as_str();
                 }
+                None => break,
+            }
+        }
+    }
+
+    // Walk down: find PRs whose base is the current branch, recursively.
+    let mut queue = vec![branch_info.current_branch.as_str()];
+    let mut visited_down: HashSet<&str> = HashSet::new();
+    while let Some(base) = queue.pop() {
+        if !visited_down.insert(base) {
+            continue;
+        }
+        if let Some(children) = prs_by_base.get(base) {
+            for child_pr in children {
+                if let Some(tag) = crate::tags::extract_from_str(&child_pr.title) {
+                    tags.insert(tag);
+                }
+                queue.push(child_pr.head_ref_name.as_str());
+            }
+        }
+    }
+
+    tags.into_iter().collect()
+}
+
+fn filter_related_prs_by_tags(
+    prs: Vec<github::PullRequest>,
+    tags: &[String],
+) -> Vec<github::PullRequest> {
+    use std::collections::HashSet;
+    let tag_set: HashSet<&str> = tags.iter().map(|t| t.as_str()).collect();
+
+    prs.into_iter()
+        .filter(|pr| match crate::tags::extract_from_str(&pr.title) {
+            Some(extracted_tag) => tag_set.contains(extracted_tag.as_str()),
+            None => {
+                println!(
+                    "{} {} {}",
+                    "x".bright_red(),
+                    pr.title.bright_cyan(),
+                    "No tag found".bright_red()
+                );
+                false
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_pr(number: u32, title: &str, head: &str, base: &str) -> github::PullRequest {
+        github::PullRequest {
+            id: number.to_string(),
+            title: title.to_string(),
+            resource_path: format!("/owner/repo/pull/{}", number),
+            number,
+            body: String::new(),
+            head_ref_name: head.to_string(),
+            base_ref_name: base.to_string(),
+        }
+    }
+
+    fn make_branch_info(current: &str, bases: &[&str]) -> git::BranchInfo {
+        git::BranchInfo {
+            current_branch: current.to_string(),
+            bases: bases.iter().map(|s| s.to_string()).collect(),
+            commits: vec![],
+        }
+    }
+
+    #[test]
+    fn test_linear_stack_collects_all_tags() {
+        // A <- B <- C <- D (current), each with a different task tag
+        let prs = vec![
+            make_pr(1, "[TASK-1]: feat A", "branch-a", "main"),
+            make_pr(2, "[TASK-2]: feat B", "branch-b", "branch-a"),
+            make_pr(3, "[TASK-3]: feat C", "branch-c", "branch-b"),
+        ];
+        let branch_info = make_branch_info("branch-d", &["branch-c"]);
+
+        let mut tags = collect_stack_tags(&prs, &branch_info, "TASK-4");
+        tags.sort();
+
+        assert_eq!(tags, vec!["TASK-1", "TASK-2", "TASK-3", "TASK-4"]);
+    }
+
+    #[test]
+    fn test_down_walk_finds_child_prs() {
+        // current branch is B (mid-stack), C and D are children
+        let prs = vec![
+            make_pr(3, "[TASK-3]: feat C", "branch-c", "branch-b"),
+            make_pr(4, "[TASK-4]: feat D", "branch-d", "branch-c"),
+        ];
+        let branch_info = make_branch_info("branch-b", &["branch-a"]);
+
+        let mut tags = collect_stack_tags(&prs, &branch_info, "TASK-2");
+        tags.sort();
+
+        assert_eq!(tags, vec!["TASK-2", "TASK-3", "TASK-4"]);
+    }
+
+    #[test]
+    fn test_no_stack_prs_returns_only_current_tag() {
+        let prs = vec![make_pr(1, "[OTHER-1]: unrelated", "other-branch", "main")];
+        let branch_info = make_branch_info("my-branch", &["main"]);
+
+        let tags = collect_stack_tags(&prs, &branch_info, "TASK-1");
+
+        assert_eq!(tags, vec!["TASK-1"]);
+    }
+
+    #[test]
+    fn test_cycle_guard() {
+        // pathological: A's base is B and B's base is A
+        let prs = vec![
+            make_pr(1, "[TASK-1]: A", "branch-a", "branch-b"),
+            make_pr(2, "[TASK-2]: B", "branch-b", "branch-a"),
+        ];
+        let branch_info = make_branch_info("branch-c", &["branch-a"]);
+
+        // should terminate and not hang
+        let mut tags = collect_stack_tags(&prs, &branch_info, "TASK-3");
+        tags.sort();
+
+        assert_eq!(tags, vec!["TASK-1", "TASK-2", "TASK-3"]);
+    }
+
+    #[test]
+    fn test_root_branch_no_up_walk() {
+        // current branch bases directly on main, no PR above it
+        let prs = vec![make_pr(1, "[TASK-1]: sibling", "other", "main")];
+        let branch_info = make_branch_info("my-branch", &["main"]);
+
+        let tags = collect_stack_tags(&prs, &branch_info, "TASK-2");
+
+        assert_eq!(tags, vec!["TASK-2"]);
+    }
 }

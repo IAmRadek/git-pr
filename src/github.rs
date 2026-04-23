@@ -20,7 +20,7 @@ const REVIEWERS_QUERY: &str = r#"query ($repo: String!, $owner: String!) {
 // GraphQL query to get pull requests for a user
 const RELATED_PR_QUERY: &str = r#"query ($login: String!) {
   user(login: $login) {
-    pullRequests(last: 20) {
+    pullRequests(last: 50, states: [OPEN]) {
       edges {
         node {
           id
@@ -28,6 +28,8 @@ const RELATED_PR_QUERY: &str = r#"query ($login: String!) {
           resourcePath
           number
           body
+          headRefName
+          baseRefName
         }
       }
     }
@@ -71,6 +73,12 @@ pub struct PullRequest {
     pub number: u32,
     /// The body/description of the PR
     pub body: String,
+    /// The head (source) branch name
+    #[serde(alias = "headRefName", default)]
+    pub head_ref_name: String,
+    /// The base (target) branch name
+    #[serde(alias = "baseRefName", default)]
+    pub base_ref_name: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -299,6 +307,8 @@ pub fn get_pr_by_number(pr_number: u32) -> Result<PullRequest, String> {
         resource_path,
         number: pr_view.number,
         body: pr_view.body,
+        head_ref_name: String::new(),
+        base_ref_name: String::new(),
     })
 }
 
