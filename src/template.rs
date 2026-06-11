@@ -23,13 +23,17 @@ pub fn resolve_body_template(config: &Config) -> String {
     config.template.body.clone()
 }
 
-pub fn build_editor_body(config: &Config, tag: &str, is_jira: bool) -> String {
+pub fn build_editor_body(config: &Config, tag: Option<&str>, is_jira: bool) -> String {
     let template = resolve_body_template(config);
-    let mut lines = vec![format!("Ticket: {}", tag)];
+    let mut lines = Vec::new();
 
-    if is_jira {
-        if let Some(jira_url) = config.jira_url() {
-            lines.push(format!("Jira: {}{}", jira_url, tag));
+    if let Some(tag) = tag {
+        lines.push(format!("Ticket: {}", tag));
+
+        if is_jira {
+            if let Some(jira_url) = config.jira_url() {
+                lines.push(format!("Jira: {}{}", jira_url, tag));
+            }
         }
     }
 
@@ -109,7 +113,7 @@ mod tests {
     #[test]
     fn test_build_editor_body_with_jira() {
         let config = test_config_with_jira();
-        let body = build_editor_body(&config, "TRACK-123", true);
+        let body = build_editor_body(&config, Some("TRACK-123"), true);
 
         assert!(body.contains("Ticket: TRACK-123"));
         assert!(body.contains("Jira: https://jira.example.com/browse/TRACK-123"));
@@ -119,7 +123,7 @@ mod tests {
     #[test]
     fn test_build_editor_body_without_jira_url() {
         let config = Config::default();
-        let body = build_editor_body(&config, "TRACK-123", true);
+        let body = build_editor_body(&config, Some("TRACK-123"), true);
 
         assert!(body.contains("Ticket: TRACK-123"));
         assert!(!body.contains("Jira:"));
@@ -132,7 +136,7 @@ mod tests {
         let mut config = Config::default();
         config.template.body = "## Summary\n".to_string();
 
-        let body = build_editor_body(&config, "TRACK-123", false);
+        let body = build_editor_body(&config, Some("TRACK-123"), false);
 
         assert!(body.contains("Ticket: TRACK-123"));
         assert!(body.contains("<!-- RELATED_PR -->"));
@@ -144,10 +148,20 @@ mod tests {
     fn test_build_editor_body_avoids_duplicate_markers() {
         let config = Config::default();
 
-        let body = build_editor_body(&config, "TRACK-123", false);
+        let body = build_editor_body(&config, Some("TRACK-123"), false);
 
         assert_eq!(body.matches("<!-- RELATED_PR -->").count(), 1);
         assert_eq!(body.matches("<!-- /RELATED_PR -->").count(), 1);
+    }
+
+    #[test]
+    fn test_build_editor_body_without_tag() {
+        let config = test_config_with_jira();
+        let body = build_editor_body(&config, None, false);
+
+        assert!(!body.contains("Ticket:"));
+        assert!(!body.contains("Jira:"));
+        assert!(body.contains("Related PRs:"));
     }
 
     #[test]

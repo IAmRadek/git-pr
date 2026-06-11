@@ -4,7 +4,7 @@ pub struct PullRequest {
     /// The title of the PR (e.g., "[TRACK-123]: Add new feature")
     pub title: String,
     /// The tag/ticket identifier (e.g., "TRACK-123")
-    pub tag: String,
+    pub tag: Option<String>,
     /// Whether this PR is tracked by a Jira ticket
     pub is_jira: bool,
     /// The full PR body as authored in the editor
@@ -29,7 +29,7 @@ impl PullRequest {
 
     /// Sets the tag and returns self for chaining
     pub fn with_tag(mut self, tag: impl Into<String>) -> Self {
-        self.tag = tag.into();
+        self.tag = Some(tag.into());
         self
     }
 
@@ -73,7 +73,7 @@ mod tests {
             .with_base("main");
 
         assert_eq!(pr.title, "[TEST-123]: Test PR");
-        assert_eq!(pr.tag, "TEST-123");
+        assert_eq!(pr.tag, Some("TEST-123".to_string()));
         assert!(pr.is_jira);
         assert_eq!(pr.body, "PR body");
         assert_eq!(pr.reviewers, vec!["user1", "user2"]);

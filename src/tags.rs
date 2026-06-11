@@ -7,7 +7,8 @@ use lazy_static::lazy_static;
 use regex::Regex;
 
 lazy_static! {
-    static ref PATTERN: Regex = Regex::new(r"\[(?P<bracketed>[A-Z0-9_]+(?:-[A-Z0-9_]+)*)\]").unwrap();
+    static ref PATTERN: Regex =
+        Regex::new(r"\[(?P<bracketed>[A-Z0-9_]+(?:-[A-Z0-9_]+)*)\]").unwrap();
     static ref BARE_PATTERN: Regex = Regex::new(r"^[A-Z0-9_]+(?:-[A-Z0-9_]+)*$").unwrap();
 }
 
@@ -76,6 +77,17 @@ impl Tags {
         }
     }
 
+    /// Validator for optional tag input format
+    pub fn optional_validator(
+        ticket: &str,
+    ) -> Result<inquire::validator::Validation, inquire::CustomUserError> {
+        if ticket.trim().is_empty() {
+            Ok(inquire::validator::Validation::Valid)
+        } else {
+            Self::validator(ticket)
+        }
+    }
+
     /// Load tags from a file, or create an empty Tags if the file doesn't exist
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, std::io::Error> {
         let path = path.as_ref();
@@ -112,6 +124,10 @@ impl Tags {
     /// Add a tag to the front of the list (most recently used)
     /// Removes duplicates and limits to 10 tags
     pub fn add(&mut self, tag: String) {
+        if tag.trim().is_empty() {
+            return;
+        }
+
         if self.tags.contains(&tag) {
             self.tags.retain(|t| t != &tag);
         }

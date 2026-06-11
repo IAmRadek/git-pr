@@ -60,10 +60,7 @@ pub fn get_branch_bases_and_commits() -> Result<BranchInfo, Error> {
         return Err(Error::CannotBeInMainBranch(current_branch.to_string()));
     }
 
-    let current_oid = head
-        .peel_to_commit()
-        .map_err(Error::Git)?
-        .id();
+    let current_oid = head.peel_to_commit().map_err(Error::Git)?.id();
 
     let mut base_candidates: Vec<(String, Oid, usize)> = Vec::new();
     let branches = repo.branches(Some(BranchType::Local)).map_err(Error::Git)?;
@@ -76,11 +73,7 @@ pub fn get_branch_bases_and_commits() -> Result<BranchInfo, Error> {
             continue;
         }
 
-        let branch_oid = branch
-            .get()
-            .peel_to_commit()
-            .map_err(Error::Git)?
-            .id();
+        let branch_oid = branch.get().peel_to_commit().map_err(Error::Git)?.id();
 
         let (ahead, behind) = repo
             .graph_ahead_behind(current_oid, branch_oid)
@@ -105,10 +98,18 @@ pub fn get_branch_bases_and_commits() -> Result<BranchInfo, Error> {
         collect_all_branch_commits(&repo, current_branch)?
     };
 
-    Ok(BranchInfo { current_branch: current_branch.to_string(), bases, commits })
+    Ok(BranchInfo {
+        current_branch: current_branch.to_string(),
+        bases,
+        commits,
+    })
 }
 
-fn collect_commits_since(repo: &Repository, head_oid: Oid, base_oid: Oid) -> Result<Vec<String>, Error> {
+fn collect_commits_since(
+    repo: &Repository,
+    head_oid: Oid,
+    base_oid: Oid,
+) -> Result<Vec<String>, Error> {
     let merge_base = repo.merge_base(head_oid, base_oid).map_err(Error::Git)?;
     let mut revwalk = repo.revwalk().map_err(Error::Git)?;
     revwalk.push(head_oid).map_err(Error::Git)?;
@@ -126,7 +127,10 @@ fn collect_commits_since(repo: &Repository, head_oid: Oid, base_oid: Oid) -> Res
     Ok(commits)
 }
 
-fn collect_all_branch_commits(repo: &Repository, current_branch: &str) -> Result<Vec<String>, Error> {
+fn collect_all_branch_commits(
+    repo: &Repository,
+    current_branch: &str,
+) -> Result<Vec<String>, Error> {
     let branch = repo
         .find_branch(current_branch, BranchType::Local)
         .map_err(Error::Git)?;

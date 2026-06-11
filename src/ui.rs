@@ -12,19 +12,28 @@ pub fn init_render_config() {
     set_global_render_config(style);
 }
 
-pub fn prompt_tag(tags: &Tags) -> Result<String, Error> {
+pub fn prompt_tag(tags: &Tags) -> Result<Option<String>, Error> {
+    let normalize = |tag: String| {
+        let tag = tag.trim().to_string();
+        if tag.is_empty() {
+            None
+        } else {
+            Some(tag)
+        }
+    };
+
     if tags.is_empty() {
         Text::new("PR Tag:")
-            .with_validator(Tags::validator)
+            .with_validator(Tags::optional_validator)
             .prompt()
+            .map(normalize)
             .map_err(map_inquire_error)
     } else {
-        let default = tags.iter().next().cloned().unwrap_or_default();
         Text::new("PR Tag:")
             .with_autocomplete(tags.clone())
-            .with_default(&default)
-            .with_validator(Tags::validator)
+            .with_validator(Tags::optional_validator)
             .prompt()
+            .map(normalize)
             .map_err(map_inquire_error)
     }
 }

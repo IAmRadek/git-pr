@@ -390,7 +390,9 @@ pub fn publish_pr(
     }
 
     let mut command = Command::new("gh");
-    command.args(["pr", "create", "-B", &base, "-t", &title, "-a", "@me", "-b", &body]);
+    command.args([
+        "pr", "create", "-B", &base, "-t", &title, "-a", "@me", "-b", &body,
+    ]);
     if !reviewers_str.is_empty() {
         command.args(["-r", &reviewers_str]);
     }

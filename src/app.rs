@@ -34,7 +34,7 @@ pub fn run(args: crate::cli::Args) -> Result<()> {
         None
     };
 
-    let mut pr = build_pr_from_branch(&branch_info, &mut tags, github_tag)?;
+    let mut pr = build_pr_from_branch(&branch_info, &mut tags, github_tag, args.update_only)?;
 
     pr.base = select_base_branch(&branch_info)?;
 
@@ -54,11 +54,20 @@ fn build_pr_from_branch(
     branch_info: &git::BranchInfo,
     tags: &mut Tags,
     github_tag: Option<String>,
+    update_only: bool,
 ) -> Result<PullRequest> {
     if let Some(tag) = github_tag {
         tags.add_and_save(tag.clone())?;
         println!("{} PR Tag: {}", ">".bright_green(), tag.bright_cyan());
         return Ok(PullRequest::new().with_tag(tag).with_jira(true));
+    }
+
+    if update_only {
+        println!(
+            "{} No PR tag found; skipping related PR tracking.",
+            ">".bright_green()
+        );
+        return Ok(PullRequest::new());
     }
 
     let found_tag = crate::tags::extract_from_vec(branch_info.commits.clone());
@@ -76,18 +85,29 @@ fn build_pr_from_branch(
     } else {
         let selected_tag = ui::prompt_tag(tags)?;
 
-        tags.add(selected_tag.clone());
-        tags.save()?;
-
         let default_title = ui::default_pr_title(branch_info);
-        let full_title = format!("[{}]: {}", selected_tag, default_title);
+        let full_title = match &selected_tag {
+            Some(tag) => {
+                tags.add(tag.clone());
+                tags.save()?;
+                format!("[{}]: {}", tag, default_title)
+            }
+            None => default_title,
+        };
 
-        println!("{} PR title: {}", ">".bright_green(), full_title.bright_cyan());
+        println!(
+            "{} PR title: {}",
+            ">".bright_green(),
+            full_title.bright_cyan()
+        );
 
-        Ok(PullRequest::new()
-            .with_tag(selected_tag)
-            .with_title(full_title)
-            .with_jira(false))
+        let pr = PullRequest::new().with_title(full_title).with_jira(false);
+
+        Ok(if let Some(tag) = selected_tag {
+            pr.with_tag(tag)
+        } else {
+            pr
+        })
     }
 }
 
@@ -110,7 +130,7 @@ fn gather_pr_details(
     _branch_info: &git::BranchInfo,
     pr: PullRequest,
 ) -> Result<PullRequest> {
-    let initial_body = template::build_editor_body(config, &pr.tag, pr.is_jira);
+    let initial_body = template::build_editor_body(config, pr.tag.as_deref(), pr.is_jira);
     let body = ui::prompt_body(&initial_body)?;
 
     let reviewers_list = github::get_available_reviewers()
@@ -144,9 +164,17 @@ fn update_related_prs(
     created_pr_number: Option<u32>,
     dry_run: bool,
 ) -> Result<()> {
+    let Some(current_tag) = pr.tag.as_deref() else {
+        println!(
+            "{} No PR tag; skipping related PR updates.",
+            ">".bright_green()
+        );
+        return Ok(());
+    };
+
     let mut related_prs = match github::get_user_prs(config.github_user().as_deref()) {
         Ok(all_prs) => {
-            let tags = collect_stack_tags(&all_prs, branch_info, &pr.tag);
+            let tags = collect_stack_tags(&all_prs, branch_info, current_tag);
             filter_related_prs_by_tags(all_prs, &tags)
         }
         Err(err) => {
@@ -175,6 +203,14 @@ fn update_related_prs(
 
     if related_prs.is_empty() {
         println!("{} No related PRs found.", ">".bright_green());
+        return Ok(());
+    }
+
+    if related_prs.len() == 1 {
+        println!(
+            "{} Only one related PR found; skipping related PR updates.",
+            ">".bright_green()
+        );
         return Ok(());
     }
 
@@ -227,12 +263,17 @@ fn collect_stack_tags(
 ) -> Vec<String> {
     use std::collections::{HashMap, HashSet};
 
-    let pr_by_head: HashMap<&str, &github::PullRequest> =
-        all_prs.iter().map(|pr| (pr.head_ref_name.as_str(), pr)).collect();
+    let pr_by_head: HashMap<&str, &github::PullRequest> = all_prs
+        .iter()
+        .map(|pr| (pr.head_ref_name.as_str(), pr))
+        .collect();
 
     let mut prs_by_base: HashMap<&str, Vec<&github::PullRequest>> = HashMap::new();
     for pr in all_prs {
-        prs_by_base.entry(pr.base_ref_name.as_str()).or_default().push(pr);
+        prs_by_base
+            .entry(pr.base_ref_name.as_str())
+            .or_default()
+            .push(pr);
     }
 
     let mut tags: HashSet<String> = HashSet::new();
