@@ -10,6 +10,7 @@ pub mod git;
 pub mod github;
 pub mod jira;
 pub mod plugin;
+pub mod related;
 pub mod tags;
 pub mod template;
 pub mod ui;

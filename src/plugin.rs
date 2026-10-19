@@ -11,6 +11,7 @@ use crate::config::{Config, ForgeKind};
 use crate::error::{Error, Result};
 use crate::git::{self, BranchInfo};
 use crate::github::{GhForge, GhReviewers};
+use crate::related::RelatedPrs;
 
 /// State shared by every plugin during one run
 pub struct Context {
@@ -133,6 +134,8 @@ pub trait AfterCreate {
 pub struct Registry {
     pub forge: Box<dyn Forge>,
     pub reviewer_source: Option<Box<dyn ReviewerSource>>,
+    /// Run in order after the PR step
+    pub after_create: Vec<Box<dyn AfterCreate>>,
 }
 
 impl Registry {
@@ -142,13 +145,18 @@ impl Registry {
             Error::Config(format!("Cannot read the host of origin {}", origin_url))
         })?;
 
-        match config.forge_kind(host) {
-            Some(ForgeKind::Github) => Ok(Self::github(config)),
-            None => Err(Error::Config(format!(
-                "No forge for host {}. Add it under `forges` in config.yaml",
-                host
-            ))),
-        }
+        let mut registry = match config.forge_kind(host) {
+            Some(ForgeKind::Github) => Self::github(config),
+            None => {
+                return Err(Error::Config(format!(
+                    "No forge for host {}. Add it under `forges` in config.yaml",
+                    host
+                )))
+            }
+        };
+
+        registry.after_create.push(Box::new(RelatedPrs));
+        Ok(registry)
     }
 
     fn github(config: &Config) -> Self {
@@ -157,6 +165,22 @@ impl Registry {
                 user: config.github_user(),
             }),
             reviewer_source: Some(Box::new(GhReviewers)),
+            after_create: vec![],
+        }
+    }
+
+    /// Runs the `AfterCreate` plugins. A failing plugin prints a warning.
+    pub fn after_create(
+        &self,
+        ctx: &Context,
+        draft: &Draft,
+        created: Option<&PrRef>,
+        dry_run: bool,
+    ) {
+        for plugin in &self.after_create {
+            if let Err(err) = plugin.run(ctx, self.forge.as_ref(), draft, created, dry_run) {
+                warn(&err);
+            }
         }
     }
 
@@ -185,6 +209,8 @@ fn warn(err: &Error) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
 
     struct Fixed(Vec<&'static str>);
 
@@ -218,6 +244,48 @@ mod tests {
             },
             config: Config::default(),
         }
+    }
+
+    struct Recording(Rc<Cell<bool>>);
+
+    impl AfterCreate for Recording {
+        fn run(
+            &self,
+            _ctx: &Context,
+            _forge: &dyn Forge,
+            _draft: &Draft,
+            _created: Option<&PrRef>,
+            _dry_run: bool,
+        ) -> Result<()> {
+            self.0.set(true);
+            Ok(())
+        }
+    }
+
+    struct FailingAfter;
+
+    impl AfterCreate for FailingAfter {
+        fn run(
+            &self,
+            _ctx: &Context,
+            _forge: &dyn Forge,
+            _draft: &Draft,
+            _created: Option<&PrRef>,
+            _dry_run: bool,
+        ) -> Result<()> {
+            Err(Error::Config("broken".into()))
+        }
+    }
+
+    #[test]
+    fn test_after_create_runs_past_a_failing_plugin() {
+        let ran = Rc::new(Cell::new(false));
+        let mut registry = registry(None);
+        registry.after_create = vec![Box::new(FailingAfter), Box::new(Recording(ran.clone()))];
+
+        registry.after_create(&ctx(), &Draft::default(), None, true);
+
+        assert!(ran.get());
     }
 
     #[test]
