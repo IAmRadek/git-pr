@@ -3,8 +3,7 @@ use colored::Colorize;
 use crate::config::{self, Config};
 use crate::error::{Error, Result};
 use crate::git;
-use crate::github;
-use crate::plugin::{Draft, Forge, PrRef, Registry, RemotePr, Ticket};
+use crate::plugin::{Context, Draft, Forge, PrRef, Registry, RemotePr, Ticket};
 use crate::tags::Tags;
 use crate::template;
 use crate::ui;
@@ -14,8 +13,6 @@ pub fn run(args: crate::cli::Args) -> Result<()> {
 
     config::ensure_config_dir_exists(std::path::Path::new(&args.config));
     let config = Config::load(&args.config)?;
-    let registry = Registry::default();
-    let forge = registry.forge.as_ref();
 
     let branch_info = git::get_branch_bases_and_commits()?;
 
@@ -23,12 +20,20 @@ pub fn run(args: crate::cli::Args) -> Result<()> {
         return Err(Error::NoCommits);
     }
 
+    let registry = Registry::for_origin(&config, &git::origin_url()?)?;
+    let forge = registry.forge.as_ref();
+
+    let ctx = Context {
+        branch: branch_info,
+        config,
+    };
+
     let tags_path = config::get_tags_path_with_dir(&args.config);
     let mut tags = Tags::from_file(tags_path)?;
 
     // In --update-only mode there are no new commits with a tag, so look up the
-    // existing PR on GitHub and pull the tag from its title instead.
-    let github_tag = if args.update_only {
+    // existing PR on the forge and pull the tag from its title instead.
+    let remote_tag = if args.update_only {
         forge
             .current_pr()
             .ok()
@@ -39,26 +44,26 @@ pub fn run(args: crate::cli::Args) -> Result<()> {
     };
 
     let mut pr = build_pr_from_branch(
-        &config,
-        &branch_info,
+        &ctx.config,
+        &ctx.branch,
         &mut tags,
-        github_tag,
+        remote_tag,
         args.update_only,
     )?;
 
-    pr.base = select_base_branch(&branch_info)?;
+    pr.base = select_base_branch(&ctx.branch)?;
 
     let mut created: Option<PrRef> = None;
 
     if !args.update_only {
-        pr = gather_pr_details(&config, forge, &branch_info, pr)?;
+        pr = gather_pr_details(&ctx, &registry, pr)?;
         created = forge.create(&pr, args.dry_run)?;
     }
 
     update_related_prs(
-        &config,
+        &ctx.config,
         forge,
-        &branch_info,
+        &ctx.branch,
         &pr,
         created.as_ref(),
         args.dry_run,
@@ -71,10 +76,10 @@ fn build_pr_from_branch(
     config: &Config,
     branch_info: &git::BranchInfo,
     tags: &mut Tags,
-    github_tag: Option<String>,
+    remote_tag: Option<String>,
     update_only: bool,
 ) -> Result<Draft> {
-    if let Some(tag) = github_tag {
+    if let Some(tag) = remote_tag {
         tags.add_and_save(tag.clone())?;
         println!("{} PR Tag: {}", ">".bright_green(), tag.bright_cyan());
         return Ok(Draft {
@@ -157,24 +162,17 @@ fn select_base_branch(branch_info: &git::BranchInfo) -> Result<String> {
     }
 }
 
-fn gather_pr_details(
-    config: &Config,
-    forge: &dyn Forge,
-    _branch_info: &git::BranchInfo,
-    pr: Draft,
-) -> Result<Draft> {
-    let initial_body = template::build_editor_body(config, &forge.templates(), pr.ticket.as_ref());
-    let body = ui::prompt_body(&initial_body)?;
-
-    let reviewers_list = github::get_available_reviewers()
-        .unwrap_or_else(|_| config.github.default_reviewers.clone());
-    let reviewers = ui::prompt_reviewers(reviewers_list)?;
-
-    Ok(Draft {
-        body,
-        reviewers,
+fn gather_pr_details(ctx: &Context, registry: &Registry, pr: Draft) -> Result<Draft> {
+    let initial_body =
+        template::build_editor_body(&ctx.config, &registry.forge.templates(), pr.ticket.as_ref());
+    let pr = Draft {
+        body: ui::prompt_body(&initial_body)?,
         ..pr
-    })
+    };
+
+    let reviewers = ui::prompt_reviewers(registry.reviewers(ctx, &pr))?;
+
+    Ok(Draft { reviewers, ..pr })
 }
 
 fn update_related_prs(
@@ -193,7 +191,7 @@ fn update_related_prs(
         return Ok(());
     };
 
-    let all_prs = forge.open_prs_by(config.github_user().as_deref())?;
+    let all_prs = forge.open_prs()?;
     let tags = collect_stack_tags(&all_prs, branch_info, current_tag);
     let mut related_prs = filter_related_prs_by_tags(all_prs, &tags);
 
@@ -237,8 +235,13 @@ fn update_related_prs(
     );
 
     for related_pr in &related_prs {
-        let updated_body =
-            template::replace_related_prs(config, &related_pr.body, &related_pr.pr, &related_prs);
+        let updated_body = template::replace_related_prs(
+            config,
+            forge,
+            &related_pr.body,
+            &related_pr.pr,
+            &related_prs,
+        );
 
         match forge.update_body(&related_pr.pr, &updated_body, dry_run) {
             Ok(()) => {

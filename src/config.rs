@@ -1,6 +1,7 @@
 //! Configuration management for git-pr.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
@@ -25,7 +26,19 @@ pub struct Config {
     pub jira: JiraConfig,
     pub template: TemplateConfig,
     pub github: GitHubConfig,
+    /// Forge for each origin host, e.g. `git.example.com: github`.
+    /// Hosts in `DEFAULT_FORGES` need no entry.
+    pub forges: HashMap<String, ForgeKind>,
 }
+
+/// The forges that git-pr can talk to
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ForgeKind {
+    Github,
+}
+
+const DEFAULT_FORGES: &[(&str, ForgeKind)] = &[("github.com", ForgeKind::Github)];
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -73,7 +86,6 @@ impl Default for MarkerConfig {
 #[serde(default)]
 pub struct GitHubConfig {
     pub user: Option<String>,
-    pub default_reviewers: Vec<String>,
 }
 
 impl Config {
@@ -122,6 +134,16 @@ impl Config {
 
     pub fn github_user(&self) -> Option<String> {
         self.github.user.clone()
+    }
+
+    /// The forge for `host`: the `forges` entry first, then `DEFAULT_FORGES`
+    pub fn forge_kind(&self, host: &str) -> Option<ForgeKind> {
+        self.forges.get(host).copied().or_else(|| {
+            DEFAULT_FORGES
+                .iter()
+                .find(|(default_host, _)| *default_host == host)
+                .map(|(_, kind)| *kind)
+        })
     }
 
     pub fn sample_yaml() -> String {
@@ -221,6 +243,7 @@ template:
     related_pr_end: "<!-- END -->"
 github:
   user: "testuser"
+  # Removed setting; old configs must still load
   default_reviewers:
     - "reviewer1"
     - "reviewer2"
@@ -235,7 +258,6 @@ github:
         assert_eq!(config.template.markers.related_pr_start, "<!-- START -->");
         assert_eq!(config.template.markers.related_pr_end, "<!-- END -->");
         assert_eq!(config.github.user, Some("testuser".to_string()));
-        assert_eq!(config.github.default_reviewers.len(), 2);
     }
 
     #[test]
@@ -250,6 +272,29 @@ jira:
             Some("https://jira.example.com/browse/".to_string())
         );
         assert!(!config.template.body.is_empty());
+    }
+
+    #[test]
+    fn test_forge_kind_default_host() {
+        let config = Config::default();
+
+        assert_eq!(config.forge_kind("github.com"), Some(ForgeKind::Github));
+        assert_eq!(config.forge_kind("gitlab.example.com"), None);
+    }
+
+    #[test]
+    fn test_forge_kind_from_config() {
+        let yaml = r#"
+forges:
+  git.example.com: github
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+
+        assert_eq!(
+            config.forge_kind("git.example.com"),
+            Some(ForgeKind::Github)
+        );
+        assert_eq!(config.forge_kind("github.com"), Some(ForgeKind::Github));
     }
 
     #[test]

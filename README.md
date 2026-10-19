@@ -49,9 +49,6 @@ jira:
 
 github:
   user: "your-username"
-  default_reviewers:
-    - teammate1
-    - teammate2
 
 template:
   path: "/absolute/path/to/pull_request_template.md"
@@ -70,6 +67,17 @@ template:
     related_pr_start: "<!-- RELATED_PR -->"
     related_pr_end: "<!-- /RELATED_PR -->"
 ```
+
+## Forges
+
+`git-pr` chooses the forge from the host of the `origin` remote. `github.com` needs no entry. For another host, add it under `forges`:
+
+```yaml
+forges:
+  git.example.com: github
+```
+
+If the host has no forge, `git-pr` stops with an error.
 
 ## Template Resolution
 

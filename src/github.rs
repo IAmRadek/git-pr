@@ -4,7 +4,7 @@ use std::process::Command;
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
-use crate::plugin::{Draft, Forge, PrRef, RemotePr};
+use crate::plugin::{Context, Draft, Forge, PrRef, RemotePr, ReviewerSource};
 
 // GraphQL query to get assignable users (potential reviewers) for a repository
 const REVIEWERS_QUERY: &str = r#"query ($repo: String!, $owner: String!) {
@@ -111,7 +111,12 @@ fn repo_from_resource_path(resource_path: &str) -> String {
 }
 
 /// The GitHub forge, through the `gh` CLI
-pub struct GhForge;
+#[derive(Default)]
+pub struct GhForge {
+    /// The user whose open PRs are related-PR candidates.
+    /// `None` means the GITHUB_USER env var, then the authenticated user.
+    pub user: Option<String>,
+}
 
 impl Forge for GhForge {
     fn create(&self, draft: &Draft, dry_run: bool) -> crate::Result<Option<PrRef>> {
@@ -147,8 +152,8 @@ impl Forge for GhForge {
             .map_err(Error::GitHubCli)
     }
 
-    fn open_prs_by(&self, user: Option<&str>) -> crate::Result<Vec<RemotePr>> {
-        get_user_prs(user)
+    fn open_prs(&self) -> crate::Result<Vec<RemotePr>> {
+        get_user_prs(self.user.as_deref())
             .map(|prs| prs.into_iter().map(RemotePr::from).collect())
             .map_err(Error::GitHubCli)
     }
@@ -169,6 +174,19 @@ impl Forge for GhForge {
         .filter(|path| path.exists())
         .map(Path::to_path_buf)
         .collect()
+    }
+
+    fn link(&self, pr: &PrRef) -> String {
+        format!("{}/pull/{}", pr.repo, pr.number)
+    }
+}
+
+/// Suggests the assignable users of the current GitHub repository
+pub struct GhReviewers;
+
+impl ReviewerSource for GhReviewers {
+    fn reviewers(&self, _ctx: &Context, _draft: &Draft) -> crate::Result<Vec<String>> {
+        get_available_reviewers().map_err(Error::GitHubCli)
     }
 }
 
@@ -207,7 +225,7 @@ struct ViewerLogin {
 ///
 /// Uses the GitHub CLI to query the GraphQL API for assignable users.
 /// Returns an empty list if the query fails.
-pub fn get_available_reviewers() -> Result<Vec<String>, String> {
+fn get_available_reviewers() -> Result<Vec<String>, String> {
     let output = Command::new("gh")
         .args([
             "api",

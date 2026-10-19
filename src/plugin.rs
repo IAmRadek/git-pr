@@ -5,10 +5,12 @@
 
 use std::path::PathBuf;
 
-use crate::config::Config;
-use crate::error::Result;
-use crate::git::BranchInfo;
-use crate::github::GhForge;
+use colored::Colorize;
+
+use crate::config::{Config, ForgeKind};
+use crate::error::{Error, Result};
+use crate::git::{self, BranchInfo};
+use crate::github::{GhForge, GhReviewers};
 
 /// State shared by every plugin during one run
 pub struct Context {
@@ -103,13 +105,16 @@ pub trait Forge {
     /// The open PR for the current branch
     fn current_pr(&self) -> Result<Option<RemotePr>>;
 
-    /// Open PRs by `user`, or by the authenticated user when `user` is `None`
-    fn open_prs_by(&self, user: Option<&str>) -> Result<Vec<RemotePr>>;
+    /// Open PRs by the configured user, or by the authenticated user
+    fn open_prs(&self) -> Result<Vec<RemotePr>>;
 
     fn update_body(&self, pr: &PrRef, body: &str, dry_run: bool) -> Result<()>;
 
     /// PR template files in the repository that exist, highest priority first
     fn templates(&self) -> Vec<PathBuf>;
+
+    /// The text that refers to `pr` in a PR body
+    fn link(&self, pr: &PrRef) -> String;
 }
 
 /// Runs after the PR step. `created` is `None` on a dry run and with `--update-only`.
@@ -127,12 +132,128 @@ pub trait AfterCreate {
 /// The plugins active for one run
 pub struct Registry {
     pub forge: Box<dyn Forge>,
+    pub reviewer_source: Option<Box<dyn ReviewerSource>>,
 }
 
-impl Default for Registry {
-    fn default() -> Self {
-        Self {
-            forge: Box::new(GhForge),
+impl Registry {
+    /// Chooses the plugins for the forge that hosts `origin_url`
+    pub fn for_origin(config: &Config, origin_url: &str) -> Result<Self> {
+        let host = git::url_host(origin_url).ok_or_else(|| {
+            Error::Config(format!("Cannot read the host of origin {}", origin_url))
+        })?;
+
+        match config.forge_kind(host) {
+            Some(ForgeKind::Github) => Ok(Self::github(config)),
+            None => Err(Error::Config(format!(
+                "No forge for host {}. Add it under `forges` in config.yaml",
+                host
+            ))),
         }
+    }
+
+    fn github(config: &Config) -> Self {
+        Self {
+            forge: Box::new(GhForge {
+                user: config.github_user(),
+            }),
+            reviewer_source: Some(Box::new(GhReviewers)),
+        }
+    }
+
+    /// Reviewers to offer. Without a source, or when the source fails,
+    /// prints a warning and returns none.
+    pub fn reviewers(&self, ctx: &Context, draft: &Draft) -> Vec<String> {
+        let Some(source) = &self.reviewer_source else {
+            println!(
+                "{} No reviewer source configured; skipping reviewers.",
+                "!".bright_red()
+            );
+            return vec![];
+        };
+
+        source.reviewers(ctx, draft).unwrap_or_else(|err| {
+            warn(&err);
+            vec![]
+        })
+    }
+}
+
+fn warn(err: &Error) {
+    println!("{} Plugin failed: {}", "!".yellow(), err);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fixed(Vec<&'static str>);
+
+    impl ReviewerSource for Fixed {
+        fn reviewers(&self, _ctx: &Context, _draft: &Draft) -> Result<Vec<String>> {
+            Ok(self.0.iter().map(|r| r.to_string()).collect())
+        }
+    }
+
+    struct Failing;
+
+    impl ReviewerSource for Failing {
+        fn reviewers(&self, _ctx: &Context, _draft: &Draft) -> Result<Vec<String>> {
+            Err(Error::Config("broken".into()))
+        }
+    }
+
+    fn registry(reviewer_source: Option<Box<dyn ReviewerSource>>) -> Registry {
+        Registry {
+            reviewer_source,
+            ..Registry::github(&Config::default())
+        }
+    }
+
+    fn ctx() -> Context {
+        Context {
+            branch: BranchInfo {
+                current_branch: "feature".into(),
+                bases: vec![],
+                commits: vec![],
+            },
+            config: Config::default(),
+        }
+    }
+
+    #[test]
+    fn test_reviewers_from_source() {
+        let registry = registry(Some(Box::new(Fixed(vec!["ann", "bob"]))));
+
+        let reviewers = registry.reviewers(&ctx(), &Draft::default());
+
+        assert_eq!(reviewers, vec!["ann", "bob"]);
+    }
+
+    #[test]
+    fn test_failing_reviewer_source_gives_none() {
+        let registry = registry(Some(Box::new(Failing)));
+
+        assert!(registry.reviewers(&ctx(), &Draft::default()).is_empty());
+    }
+
+    #[test]
+    fn test_no_reviewer_source_gives_none() {
+        let registry = registry(None);
+
+        assert!(registry.reviewers(&ctx(), &Draft::default()).is_empty());
+    }
+
+    #[test]
+    fn test_for_origin_github() {
+        let registry = Registry::for_origin(&Config::default(), "git@github.com:o/r.git");
+
+        assert!(registry.is_ok());
+    }
+
+    #[test]
+    fn test_for_origin_unknown_host() {
+        let registry = Registry::for_origin(&Config::default(), "git@gitlab.example.com:o/r.git");
+
+        assert!(registry.is_err());
     }
 }

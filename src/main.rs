@@ -85,7 +85,6 @@ fn init_config(config_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
     println!("\nYou can now edit this file to customize:");
     println!("  - Jira URL for ticket linking");
     println!("  - GitHub username for related PR discovery");
-    println!("  - Default reviewers");
     println!("  - Local PR template path and fallback body");
 
     Ok(())

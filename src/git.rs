@@ -14,6 +14,35 @@ pub fn get_repository() -> Result<Repository, Error> {
     }
 }
 
+/// The URL of the `origin` remote
+pub fn origin_url() -> Result<String, Error> {
+    let repo = get_repository()?;
+    let remote = repo
+        .find_remote("origin")
+        .map_err(|_| Error::Config("No `origin` remote in this repository".to_string()))?;
+    remote
+        .url()
+        .map(str::to_string)
+        .ok_or_else(|| Error::Config("The `origin` remote URL is not valid UTF-8".to_string()))
+}
+
+/// The host of a remote URL, in scp form (`git@host:owner/repo`) or URL form
+/// (`https://host/owner/repo`, `ssh://git@host:22/owner/repo`)
+pub fn url_host(url: &str) -> Option<&str> {
+    let rest = match url.split_once("://") {
+        Some((_, rest)) => rest.split('/').next()?,
+        None => url.split_once(':')?.0,
+    };
+    let host = rest.rsplit('@').next()?;
+    let host = host.split(':').next()?;
+
+    if host.is_empty() {
+        None
+    } else {
+        Some(host)
+    }
+}
+
 /// Information about the current branch including potential base branches and commits
 #[derive(Debug, Clone)]
 pub struct BranchInfo {
@@ -155,4 +184,30 @@ fn collect_all_branch_commits(
 fn is_main(name: &str) -> bool {
     const PROTECTED_BRANCHES: &[&str] = &["master", "main", "development", "stage", "production"];
     PROTECTED_BRANCHES.contains(&name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_url_host() {
+        assert_eq!(
+            url_host("git@github.com:owner/repo.git"),
+            Some("github.com")
+        );
+        assert_eq!(
+            url_host("https://github.com/owner/repo.git"),
+            Some("github.com")
+        );
+        assert_eq!(
+            url_host("ssh://git@gitlab.example.com:2222/group/repo.git"),
+            Some("gitlab.example.com")
+        );
+        assert_eq!(
+            url_host("https://user:token@git.example.com/owner/repo"),
+            Some("git.example.com")
+        );
+        assert_eq!(url_host("/srv/git/repo.git"), None);
+    }
 }

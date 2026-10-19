@@ -5,7 +5,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::config::Config;
-use crate::plugin::{PrRef, RemotePr, Ticket};
+use crate::plugin::{Forge, PrRef, RemotePr, Ticket};
 
 /// `repo_templates` are the forge's template files, highest priority first
 pub fn resolve_body_template(config: &Config, repo_templates: &[PathBuf]) -> String {
@@ -58,6 +58,7 @@ fn template_contains_related_pr_markers(template: &str, config: &Config) -> bool
 
 pub fn replace_related_prs(
     config: &Config,
+    forge: &dyn Forge,
     body: &str,
     this_pr: &PrRef,
     related_prs: &[RemotePr],
@@ -67,12 +68,12 @@ pub fn replace_related_prs(
     let mut related_prs_lines: Vec<String> = vec![markers.related_pr_start.clone()];
 
     for related in related_prs {
-        let path = format!("{}/pull/{}", related.pr.repo, related.pr.number);
+        let link = forge.link(&related.pr);
 
         if related.pr == *this_pr {
-            related_prs_lines.push(format!("- {} - (this pr)", path));
+            related_prs_lines.push(format!("- {} - (this pr)", link));
         } else {
-            related_prs_lines.push(format!("- {}", path));
+            related_prs_lines.push(format!("- {}", link));
         }
     }
 
@@ -90,6 +91,7 @@ pub fn replace_related_prs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::github::GhForge;
 
     fn remote(repo: &str, number: u32) -> RemotePr {
         RemotePr {
@@ -182,7 +184,13 @@ More text"#;
 
         let related_prs = vec![remote("owner/repo", 1), remote("owner/repo", 2)];
 
-        let result = replace_related_prs(&config, body, &related_prs[0].pr, &related_prs);
+        let result = replace_related_prs(
+            &config,
+            &GhForge::default(),
+            body,
+            &related_prs[0].pr,
+            &related_prs,
+        );
 
         assert!(result.contains("owner/repo/pull/1 - (this pr)"));
         assert!(result.contains("- owner/repo/pull/2"));
@@ -196,7 +204,13 @@ More text"#;
 
         let related_prs = vec![remote("owner/api", 5), remote("owner/web", 5)];
 
-        let result = replace_related_prs(&config, body, &related_prs[0].pr, &related_prs);
+        let result = replace_related_prs(
+            &config,
+            &GhForge::default(),
+            body,
+            &related_prs[0].pr,
+            &related_prs,
+        );
 
         assert!(result.contains("- owner/api/pull/5 - (this pr)"));
         assert!(result.contains("- owner/web/pull/5\n"));
@@ -234,7 +248,13 @@ More text"#;
 
         let related_prs = vec![remote("owner/repo", 1)];
 
-        let result = replace_related_prs(&config, body, &related_prs[0].pr, &related_prs);
+        let result = replace_related_prs(
+            &config,
+            &GhForge::default(),
+            body,
+            &related_prs[0].pr,
+            &related_prs,
+        );
 
         assert!(result.contains("{{RELATED_START}}"));
         assert!(result.contains("{{RELATED_END}}"));
