@@ -4,7 +4,7 @@ use crate::config::{self, Config};
 use crate::error::{Error, Result};
 use crate::git;
 use crate::github;
-use crate::pr::PullRequest;
+use crate::plugin::{Draft, Forge, PrRef, Registry, RemotePr, Ticket};
 use crate::tags::Tags;
 use crate::template;
 use crate::ui;
@@ -14,6 +14,8 @@ pub fn run(args: crate::cli::Args) -> Result<()> {
 
     config::ensure_config_dir_exists(std::path::Path::new(&args.config));
     let config = Config::load(&args.config)?;
+    let registry = Registry::default();
+    let forge = registry.forge.as_ref();
 
     let branch_info = git::get_branch_bases_and_commits()?;
 
@@ -27,39 +29,58 @@ pub fn run(args: crate::cli::Args) -> Result<()> {
     // In --update-only mode there are no new commits with a tag, so look up the
     // existing PR on GitHub and pull the tag from its title instead.
     let github_tag = if args.update_only {
-        github::get_current_branch_pr()
+        forge
+            .current_pr()
             .ok()
+            .flatten()
             .and_then(|p| crate::tags::extract_from_str(&p.title))
     } else {
         None
     };
 
-    let mut pr = build_pr_from_branch(&branch_info, &mut tags, github_tag, args.update_only)?;
+    let mut pr = build_pr_from_branch(
+        &config,
+        &branch_info,
+        &mut tags,
+        github_tag,
+        args.update_only,
+    )?;
 
     pr.base = select_base_branch(&branch_info)?;
 
-    let mut created_pr_number: Option<u32> = None;
+    let mut created: Option<PrRef> = None;
 
     if !args.update_only {
-        pr = gather_pr_details(&config, &branch_info, pr)?;
-        created_pr_number = publish_pr(&pr, args.dry_run)?;
+        pr = gather_pr_details(&config, forge, &branch_info, pr)?;
+        created = forge.create(&pr, args.dry_run)?;
     }
 
-    update_related_prs(&config, &branch_info, &pr, created_pr_number, args.dry_run)?;
+    update_related_prs(
+        &config,
+        forge,
+        &branch_info,
+        &pr,
+        created.as_ref(),
+        args.dry_run,
+    )?;
 
     Ok(())
 }
 
 fn build_pr_from_branch(
+    config: &Config,
     branch_info: &git::BranchInfo,
     tags: &mut Tags,
     github_tag: Option<String>,
     update_only: bool,
-) -> Result<PullRequest> {
+) -> Result<Draft> {
     if let Some(tag) = github_tag {
         tags.add_and_save(tag.clone())?;
         println!("{} PR Tag: {}", ">".bright_green(), tag.bright_cyan());
-        return Ok(PullRequest::new().with_tag(tag).with_jira(true));
+        return Ok(Draft {
+            ticket: Some(jira_ticket(config, tag)),
+            ..Draft::default()
+        });
     }
 
     if update_only {
@@ -67,7 +88,7 @@ fn build_pr_from_branch(
             "{} No PR tag found; skipping related PR tracking.",
             ">".bright_green()
         );
-        return Ok(PullRequest::new());
+        return Ok(Draft::default());
     }
 
     let found_tag = crate::tags::extract_from_vec(branch_info.commits.clone());
@@ -78,10 +99,11 @@ fn build_pr_from_branch(
         println!("{} PR title: {}", ">".bright_green(), commit.bright_cyan());
         println!("{} PR Tag: {}", ">".bright_green(), tag.bright_cyan());
 
-        Ok(PullRequest::new()
-            .with_tag(tag)
-            .with_title(commit)
-            .with_jira(true))
+        Ok(Draft {
+            ticket: Some(jira_ticket(config, tag)),
+            title: commit,
+            ..Draft::default()
+        })
     } else {
         let selected_tag = ui::prompt_tag(tags)?;
 
@@ -101,13 +123,23 @@ fn build_pr_from_branch(
             full_title.bright_cyan()
         );
 
-        let pr = PullRequest::new().with_title(full_title).with_jira(false);
-
-        Ok(if let Some(tag) = selected_tag {
-            pr.with_tag(tag)
-        } else {
-            pr
+        Ok(Draft {
+            ticket: selected_tag.map(|id| Ticket {
+                id,
+                ..Ticket::default()
+            }),
+            title: full_title,
+            ..Draft::default()
         })
+    }
+}
+
+/// A ticket from a commit or PR title, linked to Jira when `jira.url` is set
+fn jira_ticket(config: &Config, id: String) -> Ticket {
+    Ticket {
+        url: config.jira_url().map(|url| format!("{}{}", url, id)),
+        id,
+        summary: None,
     }
 }
 
@@ -127,44 +159,33 @@ fn select_base_branch(branch_info: &git::BranchInfo) -> Result<String> {
 
 fn gather_pr_details(
     config: &Config,
+    forge: &dyn Forge,
     _branch_info: &git::BranchInfo,
-    pr: PullRequest,
-) -> Result<PullRequest> {
-    let initial_body = template::build_editor_body(config, pr.tag.as_deref(), pr.is_jira);
+    pr: Draft,
+) -> Result<Draft> {
+    let initial_body = template::build_editor_body(config, &forge.templates(), pr.ticket.as_ref());
     let body = ui::prompt_body(&initial_body)?;
 
     let reviewers_list = github::get_available_reviewers()
         .unwrap_or_else(|_| config.github.default_reviewers.clone());
     let reviewers = ui::prompt_reviewers(reviewers_list)?;
 
-    Ok(pr.with_body(body).with_reviewers(reviewers))
-}
-
-fn publish_pr(pr: &PullRequest, dry_run: bool) -> Result<Option<u32>> {
-    match github::publish_pr(
-        pr.base.clone(),
-        pr.title.clone(),
-        pr.body.clone(),
-        pr.reviewers.clone(),
-        dry_run,
-    ) {
-        Ok(url) => {
-            println!("Published at: {}", url);
-            let pr_number = github::parse_pr_url(&url).map(|(num, _)| num);
-            Ok(pr_number)
-        }
-        Err(err) => Err(Error::GitHubCli(err)),
-    }
+    Ok(Draft {
+        body,
+        reviewers,
+        ..pr
+    })
 }
 
 fn update_related_prs(
     config: &Config,
+    forge: &dyn Forge,
     branch_info: &git::BranchInfo,
-    pr: &PullRequest,
-    created_pr_number: Option<u32>,
+    pr: &Draft,
+    created: Option<&PrRef>,
     dry_run: bool,
 ) -> Result<()> {
-    let Some(current_tag) = pr.tag.as_deref() else {
+    let Some(current_tag) = pr.ticket.as_ref().map(|t| t.id.as_str()) else {
         println!(
             "{} No PR tag; skipping related PR updates.",
             ">".bright_green()
@@ -172,28 +193,23 @@ fn update_related_prs(
         return Ok(());
     };
 
-    let mut related_prs = match github::get_user_prs(config.github_user().as_deref()) {
-        Ok(all_prs) => {
-            let tags = collect_stack_tags(&all_prs, branch_info, current_tag);
-            filter_related_prs_by_tags(all_prs, &tags)
-        }
-        Err(err) => {
-            return Err(Error::GitHubCli(err));
-        }
-    };
+    let all_prs = forge.open_prs_by(config.github_user().as_deref())?;
+    let tags = collect_stack_tags(&all_prs, branch_info, current_tag);
+    let mut related_prs = filter_related_prs_by_tags(all_prs, &tags);
 
-    if let Some(pr_number) = created_pr_number {
-        let already_in_list = related_prs.iter().any(|p| p.number == pr_number);
+    if let Some(created) = created {
+        let already_in_list = related_prs.iter().any(|p| p.pr == *created);
         if !already_in_list {
-            match github::get_pr_by_number(pr_number) {
+            match forge.get(created) {
                 Ok(new_pr) => {
                     related_prs.insert(0, new_pr);
                 }
                 Err(err) => {
                     println!(
-                        "{} Could not fetch newly created PR #{}: {}",
+                        "{} Could not fetch newly created PR {}#{}: {}",
                         "!".yellow(),
-                        pr_number,
+                        created.repo,
+                        created.number,
                         err
                     );
                 }
@@ -221,32 +237,24 @@ fn update_related_prs(
     );
 
     for related_pr in &related_prs {
-        let updated_body = template::replace_related_prs(
-            config,
-            &related_pr.body,
-            &related_pr.number,
-            &related_prs,
-        );
+        let updated_body =
+            template::replace_related_prs(config, &related_pr.body, &related_pr.pr, &related_prs);
 
-        match github::update_pr(
-            &related_pr.number,
-            &related_pr.resource_path,
-            updated_body,
-            dry_run,
-        ) {
-            Ok(msg) => {
+        match forge.update_body(&related_pr.pr, &updated_body, dry_run) {
+            Ok(()) => {
                 println!(
-                    "{} Updated #{}: {}",
+                    "{} Updated {}#{}",
                     "+".bright_green(),
-                    related_pr.number,
-                    msg
+                    related_pr.pr.repo,
+                    related_pr.pr.number
                 );
             }
             Err(err) => {
                 println!(
-                    "{} Update #{} failed: {}",
+                    "{} Update {}#{} failed: {}",
                     "x".red(),
-                    related_pr.number,
+                    related_pr.pr.repo,
+                    related_pr.pr.number,
                     err
                 );
             }
@@ -257,23 +265,18 @@ fn update_related_prs(
 }
 
 fn collect_stack_tags(
-    all_prs: &[github::PullRequest],
+    all_prs: &[RemotePr],
     branch_info: &git::BranchInfo,
     current_tag: &str,
 ) -> Vec<String> {
     use std::collections::{HashMap, HashSet};
 
-    let pr_by_head: HashMap<&str, &github::PullRequest> = all_prs
-        .iter()
-        .map(|pr| (pr.head_ref_name.as_str(), pr))
-        .collect();
+    let pr_by_head: HashMap<&str, &RemotePr> =
+        all_prs.iter().map(|pr| (pr.head.as_str(), pr)).collect();
 
-    let mut prs_by_base: HashMap<&str, Vec<&github::PullRequest>> = HashMap::new();
+    let mut prs_by_base: HashMap<&str, Vec<&RemotePr>> = HashMap::new();
     for pr in all_prs {
-        prs_by_base
-            .entry(pr.base_ref_name.as_str())
-            .or_default()
-            .push(pr);
+        prs_by_base.entry(pr.base.as_str()).or_default().push(pr);
     }
 
     let mut tags: HashSet<String> = HashSet::new();
@@ -292,7 +295,7 @@ fn collect_stack_tags(
                     if let Some(tag) = crate::tags::extract_from_str(&pr.title) {
                         tags.insert(tag);
                     }
-                    branch = pr.base_ref_name.as_str();
+                    branch = pr.base.as_str();
                 }
                 None => break,
             }
@@ -311,7 +314,7 @@ fn collect_stack_tags(
                 if let Some(tag) = crate::tags::extract_from_str(&child_pr.title) {
                     tags.insert(tag);
                 }
-                queue.push(child_pr.head_ref_name.as_str());
+                queue.push(child_pr.head.as_str());
             }
         }
     }
@@ -319,10 +322,7 @@ fn collect_stack_tags(
     tags.into_iter().collect()
 }
 
-fn filter_related_prs_by_tags(
-    prs: Vec<github::PullRequest>,
-    tags: &[String],
-) -> Vec<github::PullRequest> {
+fn filter_related_prs_by_tags(prs: Vec<RemotePr>, tags: &[String]) -> Vec<RemotePr> {
     use std::collections::HashSet;
     let tag_set: HashSet<&str> = tags.iter().map(|t| t.as_str()).collect();
 
@@ -346,15 +346,16 @@ fn filter_related_prs_by_tags(
 mod tests {
     use super::*;
 
-    fn make_pr(number: u32, title: &str, head: &str, base: &str) -> github::PullRequest {
-        github::PullRequest {
-            id: number.to_string(),
+    fn make_pr(number: u32, title: &str, head: &str, base: &str) -> RemotePr {
+        RemotePr {
+            pr: PrRef {
+                repo: "owner/repo".to_string(),
+                number,
+            },
             title: title.to_string(),
-            resource_path: format!("/owner/repo/pull/{}", number),
-            number,
             body: String::new(),
-            head_ref_name: head.to_string(),
-            base_ref_name: base.to_string(),
+            head: head.to_string(),
+            base: base.to_string(),
         }
     }
 
@@ -364,6 +365,27 @@ mod tests {
             bases: bases.iter().map(|s| s.to_string()).collect(),
             commits: vec![],
         }
+    }
+
+    #[test]
+    fn test_jira_ticket_links_when_jira_url_set() {
+        let mut config = Config::default();
+        config.jira.url = Some("https://jira.example.com/browse/".to_string());
+
+        let ticket = jira_ticket(&config, "TRACK-123".to_string());
+
+        assert_eq!(ticket.id, "TRACK-123");
+        assert_eq!(
+            ticket.url.as_deref(),
+            Some("https://jira.example.com/browse/TRACK-123")
+        );
+    }
+
+    #[test]
+    fn test_jira_ticket_without_jira_url() {
+        let ticket = jira_ticket(&Config::default(), "TRACK-123".to_string());
+
+        assert_eq!(ticket.url, None);
     }
 
     #[test]

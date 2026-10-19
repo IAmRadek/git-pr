@@ -9,7 +9,7 @@ pub mod error;
 pub mod git;
 pub mod github;
 pub mod jira;
-pub mod pr;
+pub mod plugin;
 pub mod tags;
 pub mod template;
 pub mod ui;
@@ -17,4 +17,4 @@ pub mod ui;
 // Re-export commonly used types
 pub use config::Config;
 pub use error::{Error, Result};
-pub use pr::PullRequest;
+pub use plugin::Draft;

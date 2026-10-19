@@ -1,6 +1,10 @@
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
+
+use crate::error::Error;
+use crate::plugin::{Draft, Forge, PrRef, RemotePr};
 
 // GraphQL query to get assignable users (potential reviewers) for a repository
 const REVIEWERS_QUERY: &str = r#"query ($repo: String!, $owner: String!) {
@@ -61,24 +65,111 @@ struct Repository {
 
 /// Represents a GitHub Pull Request
 #[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct PullRequest {
+struct PullRequest {
     /// The node ID of the PR
-    pub id: String,
+    id: String,
     /// The title of the PR
-    pub title: String,
+    title: String,
     /// The resource path (e.g., /owner/repo/pull/123)
     #[serde(alias = "resourcePath")]
-    pub resource_path: String,
+    resource_path: String,
     /// The PR number
-    pub number: u32,
+    number: u32,
     /// The body/description of the PR
-    pub body: String,
+    body: String,
     /// The head (source) branch name
     #[serde(alias = "headRefName", default)]
-    pub head_ref_name: String,
+    head_ref_name: String,
     /// The base (target) branch name
     #[serde(alias = "baseRefName", default)]
-    pub base_ref_name: String,
+    base_ref_name: String,
+}
+
+impl From<PullRequest> for RemotePr {
+    fn from(pr: PullRequest) -> Self {
+        RemotePr {
+            pr: PrRef {
+                repo: repo_from_resource_path(&pr.resource_path),
+                number: pr.number,
+            },
+            title: pr.title,
+            body: pr.body,
+            head: pr.head_ref_name,
+            base: pr.base_ref_name,
+        }
+    }
+}
+
+/// "/owner/repo/pull/123" -> "owner/repo"
+fn repo_from_resource_path(resource_path: &str) -> String {
+    resource_path
+        .trim_start_matches('/')
+        .splitn(3, '/')
+        .take(2)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// The GitHub forge, through the `gh` CLI
+pub struct GhForge;
+
+impl Forge for GhForge {
+    fn create(&self, draft: &Draft, dry_run: bool) -> crate::Result<Option<PrRef>> {
+        let url = publish_pr(
+            draft.base.clone(),
+            draft.title.clone(),
+            draft.body.clone(),
+            draft.reviewers.clone(),
+            dry_run,
+        )
+        .map_err(Error::GitHubCli)?;
+
+        if dry_run {
+            return Ok(None);
+        }
+
+        println!("Published at: {}", url);
+        Ok(parse_pr_url(&url).map(|(number, resource_path)| PrRef {
+            repo: repo_from_resource_path(&resource_path),
+            number,
+        }))
+    }
+
+    fn get(&self, pr: &PrRef) -> crate::Result<RemotePr> {
+        get_pr_by_number(&pr.repo, pr.number)
+            .map(RemotePr::from)
+            .map_err(Error::GitHubCli)
+    }
+
+    fn current_pr(&self) -> crate::Result<Option<RemotePr>> {
+        get_current_branch_pr()
+            .map(|pr| pr.map(RemotePr::from))
+            .map_err(Error::GitHubCli)
+    }
+
+    fn open_prs_by(&self, user: Option<&str>) -> crate::Result<Vec<RemotePr>> {
+        get_user_prs(user)
+            .map(|prs| prs.into_iter().map(RemotePr::from).collect())
+            .map_err(Error::GitHubCli)
+    }
+
+    fn update_body(&self, pr: &PrRef, body: &str, dry_run: bool) -> crate::Result<()> {
+        update_pr(&pr.repo, pr.number, body, dry_run)
+            .map(|_| ())
+            .map_err(Error::GitHubCli)
+    }
+
+    fn templates(&self) -> Vec<PathBuf> {
+        [
+            ".github/PULL_REQUEST_TEMPLATE.md",
+            "PULL_REQUEST_TEMPLATE.md",
+        ]
+        .iter()
+        .map(Path::new)
+        .filter(|path| path.exists())
+        .map(Path::to_path_buf)
+        .collect()
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -161,7 +252,7 @@ pub fn get_available_reviewers() -> Result<Vec<String>, String> {
 ///
 /// # Arguments
 /// * `github_user` - The GitHub username to query PRs for. Falls back to GITHUB_USER env var if None.
-pub fn get_user_prs(github_user: Option<&str>) -> Result<Vec<PullRequest>, String> {
+fn get_user_prs(github_user: Option<&str>) -> Result<Vec<PullRequest>, String> {
     let login = match github_user {
         Some(user) if !user.is_empty() => user.to_string(),
         _ => current_user_login()?,
@@ -236,7 +327,7 @@ fn current_user_login() -> Result<String, String> {
 ///
 /// # Returns
 /// A tuple of (pr_number, resource_path) or None if parsing fails
-pub fn parse_pr_url(url: &str) -> Option<(u32, String)> {
+fn parse_pr_url(url: &str) -> Option<(u32, String)> {
     // URL format: https://github.com/owner/repo/pull/123
     let url = url.trim();
 
@@ -261,7 +352,7 @@ pub fn parse_pr_url(url: &str) -> Option<(u32, String)> {
 }
 
 /// Fetch the open PR for the current branch, if one exists
-pub fn get_current_branch_pr() -> Result<PullRequest, String> {
+fn get_current_branch_pr() -> Result<Option<PullRequest>, String> {
     let output = Command::new("gh")
         .args([
             "pr",
@@ -272,8 +363,9 @@ pub fn get_current_branch_pr() -> Result<PullRequest, String> {
         .output()
         .map_err(|e| format!("Failed to execute gh command: {}", e))?;
 
+    // gh exits with an error when the branch has no PR
     if !output.status.success() {
-        return Err("No PR found for current branch".to_string());
+        return Ok(None);
     }
 
     #[derive(Deserialize)]
@@ -296,7 +388,7 @@ pub fn get_current_branch_pr() -> Result<PullRequest, String> {
         .map(|(_, path)| path)
         .unwrap_or_default();
 
-    Ok(PullRequest {
+    Ok(Some(PullRequest {
         id: pr_view.id,
         title: pr_view.title,
         resource_path,
@@ -304,24 +396,27 @@ pub fn get_current_branch_pr() -> Result<PullRequest, String> {
         body: pr_view.body,
         head_ref_name: pr_view.head_ref_name,
         base_ref_name: pr_view.base_ref_name,
-    })
+    }))
 }
 
-/// Fetch a single PR by number from the current repository
+/// Fetch a single PR by number
 ///
 /// # Arguments
+/// * `repo` - The repository as "owner/repo"
 /// * `pr_number` - The PR number to fetch
 ///
 /// # Returns
 /// The PullRequest details or an error
-pub fn get_pr_by_number(pr_number: u32) -> Result<PullRequest, String> {
+fn get_pr_by_number(repo: &str, pr_number: u32) -> Result<PullRequest, String> {
     let output = Command::new("gh")
         .args([
             "pr",
             "view",
             &pr_number.to_string(),
+            "--repo",
+            repo,
             "--json",
-            "id,title,number,body,url",
+            "id,title,number,body,headRefName,baseRefName,url",
         ])
         .output()
         .map_err(|e| format!("Failed to execute gh command: {}", e))?;
@@ -337,6 +432,10 @@ pub fn get_pr_by_number(pr_number: u32) -> Result<PullRequest, String> {
         title: String,
         number: u32,
         body: String,
+        #[serde(alias = "headRefName")]
+        head_ref_name: String,
+        #[serde(alias = "baseRefName")]
+        base_ref_name: String,
         url: String,
     }
 
@@ -354,8 +453,8 @@ pub fn get_pr_by_number(pr_number: u32) -> Result<PullRequest, String> {
         resource_path,
         number: pr_view.number,
         body: pr_view.body,
-        head_ref_name: String::new(),
-        base_ref_name: String::new(),
+        head_ref_name: pr_view.head_ref_name,
+        base_ref_name: pr_view.base_ref_name,
     })
 }
 
@@ -367,7 +466,7 @@ pub fn get_pr_by_number(pr_number: u32) -> Result<PullRequest, String> {
 /// * `body` - The PR body/description
 /// * `reviewers` - List of GitHub usernames to request review from
 /// * `dry_run` - If true, only print the command without executing
-pub fn publish_pr(
+fn publish_pr(
     base: String,
     title: String,
     body: String,
@@ -413,24 +512,11 @@ pub fn publish_pr(
 /// Update an existing pull request
 ///
 /// # Arguments
+/// * `repo_url` - The repository as "owner/repo"
 /// * `pr_number` - The PR number to update
-/// * `resource_path` - The resource path of the PR (used to determine the repo)
 /// * `body` - The new body/description for the PR
 /// * `dry_run` - If true, only print the command without executing
-pub fn update_pr(
-    pr_number: &u32,
-    resource_path: &str,
-    body: String,
-    dry_run: bool,
-) -> Result<String, String> {
-    // Parse repo from resource path (e.g., "/owner/repo/pull/123" -> "owner/repo")
-    let parts: Vec<&str> = resource_path.split('/').collect();
-    if parts.len() < 4 {
-        return Err(format!("Invalid resource path: {}", resource_path));
-    }
-
-    // Skip empty first element, take owner and repo
-    let repo_url = format!("{}/{}", parts[1], parts[2]);
+fn update_pr(repo_url: &str, pr_number: u32, body: &str, dry_run: bool) -> Result<String, String> {
     let pr_number_str = pr_number.to_string();
 
     if dry_run {
@@ -442,15 +528,7 @@ pub fn update_pr(
     }
 
     let output = Command::new("gh")
-        .args([
-            "pr",
-            "edit",
-            &pr_number_str,
-            "--repo",
-            &repo_url,
-            "-b",
-            &body,
-        ])
+        .args(["pr", "edit", &pr_number_str, "--repo", repo_url, "-b", body])
         .output()
         .map_err(|e| format!("Failed to execute gh command: {}", e))?;
 
@@ -466,6 +544,31 @@ pub fn update_pr(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_remote_pr_from_pull_request() {
+        let pr = PullRequest {
+            id: "id".into(),
+            title: "[TASK-1]: A".into(),
+            resource_path: "/owner/repo/pull/123".into(),
+            number: 123,
+            body: "body".into(),
+            head_ref_name: "feature".into(),
+            base_ref_name: "main".into(),
+        };
+
+        let remote = RemotePr::from(pr);
+
+        assert_eq!(
+            remote.pr,
+            PrRef {
+                repo: "owner/repo".into(),
+                number: 123
+            }
+        );
+        assert_eq!(remote.head, "feature");
+        assert_eq!(remote.base, "main");
+    }
 
     #[test]
     fn test_parse_pr_url_https() {
