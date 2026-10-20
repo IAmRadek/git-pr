@@ -185,6 +185,10 @@ impl Forge for GhForge {
 pub struct GhReviewers;
 
 impl ReviewerSource for GhReviewers {
+    fn name(&self) -> &'static str {
+        "github_reviewers"
+    }
+
     fn reviewers(&self, _ctx: &Context, _draft: &Draft) -> crate::Result<Vec<String>> {
         get_available_reviewers().map_err(Error::GitHubCli)
     }

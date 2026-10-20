@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use colored::Colorize;
 
-use crate::config::{Config, ForgeKind};
+use crate::config::{Config, ForgeKind, PluginsConfig};
 use crate::error::{Error, Result};
 use crate::git::{self, BranchInfo};
 use crate::github::{GhForge, GhReviewers};
@@ -73,6 +73,9 @@ pub struct RemotePr {
 /// Finds the ticket for the current branch.
 /// The first source that returns a ticket wins.
 pub trait TicketSource {
+    /// The name in the `plugins` configuration and in warnings
+    fn name(&self) -> &'static str;
+
     fn detect(&self, ctx: &Context) -> Result<Option<Ticket>>;
 
     /// Tickets to offer when no source detects one
@@ -84,6 +87,9 @@ pub trait TicketSource {
 /// Changes the draft before and after the user edits it.
 /// All hooks run, in configuration order.
 pub trait DraftHook {
+    /// The name in the `plugins` configuration and in warnings
+    fn name(&self) -> &'static str;
+
     fn before_edit(&self, _ctx: &Context, _draft: &mut Draft) -> Result<()> {
         Ok(())
     }
@@ -93,8 +99,11 @@ pub trait DraftHook {
     }
 }
 
-/// Suggests reviewers. The results of all sources are merged.
+/// Suggests reviewers. The origin host chooses one source or none.
 pub trait ReviewerSource {
+    /// The name in warnings
+    fn name(&self) -> &'static str;
+
     fn reviewers(&self, ctx: &Context, draft: &Draft) -> Result<Vec<String>>;
 }
 
@@ -122,6 +131,9 @@ pub trait Forge {
 
 /// Runs after the PR step. `created` is `None` on a dry run and with `--update-only`.
 pub trait AfterCreate {
+    /// The name in the `plugins` configuration and in warnings
+    fn name(&self) -> &'static str;
+
     fn run(
         &self,
         ctx: &Context,
@@ -161,16 +173,34 @@ impl Registry {
             }
         };
 
-        registry.ticket_sources.push(Box::new(CommitTags));
-        // First, so later hooks change the filled template
-        registry.draft_hooks.insert(
-            0,
-            Box::new(TemplateBody {
-                repo_templates: registry.forge.templates(),
-            }),
-        );
-        registry.after_create.push(Box::new(RelatedPrs));
+        registry.add_configured(&config.plugins);
         Ok(registry)
+    }
+
+    /// Adds the plugins named in `plugins`, in order. An unknown name prints a warning.
+    fn add_configured(&mut self, plugins: &PluginsConfig) {
+        for name in names(&plugins.ticket_sources, DEFAULT_TICKET_SOURCES) {
+            match name.as_str() {
+                "commit_tags" => self.ticket_sources.push(Box::new(CommitTags)),
+                other => unknown_plugin("ticket_sources", other),
+            }
+        }
+
+        for name in names(&plugins.draft_hooks, DEFAULT_DRAFT_HOOKS) {
+            match name.as_str() {
+                "template_body" => self.draft_hooks.push(Box::new(TemplateBody {
+                    repo_templates: self.forge.templates(),
+                })),
+                other => unknown_plugin("draft_hooks", other),
+            }
+        }
+
+        for name in names(&plugins.after_create, DEFAULT_AFTER_CREATE) {
+            match name.as_str() {
+                "related_prs" => self.after_create.push(Box::new(RelatedPrs)),
+                other => unknown_plugin("after_create", other),
+            }
+        }
     }
 
     fn github(config: &Config) -> Self {
@@ -189,7 +219,7 @@ impl Registry {
     pub fn before_edit(&self, ctx: &Context, draft: &mut Draft) {
         for hook in &self.draft_hooks {
             if let Err(err) = hook.before_edit(ctx, draft) {
-                warn(&err);
+                warn(hook.name(), &err);
             }
         }
     }
@@ -198,7 +228,7 @@ impl Registry {
     pub fn after_edit(&self, ctx: &Context, draft: &mut Draft) {
         for hook in &self.draft_hooks {
             if let Err(err) = hook.after_edit(ctx, draft) {
-                warn(&err);
+                warn(hook.name(), &err);
             }
         }
     }
@@ -207,7 +237,7 @@ impl Registry {
     pub fn detect_ticket(&self, ctx: &Context) -> Option<Ticket> {
         self.ticket_sources.iter().find_map(|source| {
             source.detect(ctx).unwrap_or_else(|err| {
-                warn(&err);
+                warn(source.name(), &err);
                 None
             })
         })
@@ -227,7 +257,7 @@ impl Registry {
                         }
                     }
                 }
-                Err(err) => warn(&err),
+                Err(err) => warn(source.name(), &err),
             }
         }
 
@@ -244,7 +274,7 @@ impl Registry {
     ) {
         for plugin in &self.after_create {
             if let Err(err) = plugin.run(ctx, self.forge.as_ref(), draft, created, dry_run) {
-                warn(&err);
+                warn(plugin.name(), &err);
             }
         }
     }
@@ -261,14 +291,34 @@ impl Registry {
         };
 
         source.reviewers(ctx, draft).unwrap_or_else(|err| {
-            warn(&err);
+            warn(source.name(), &err);
             vec![]
         })
     }
 }
 
-fn warn(err: &Error) {
-    println!("{} Plugin failed: {}", "!".yellow(), err);
+const DEFAULT_TICKET_SOURCES: &[&str] = &["commit_tags"];
+const DEFAULT_DRAFT_HOOKS: &[&str] = &["template_body"];
+const DEFAULT_AFTER_CREATE: &[&str] = &["related_prs"];
+
+/// The configured names, or `defaults` when the list is missing
+fn names(configured: &Option<Vec<String>>, defaults: &[&str]) -> Vec<String> {
+    configured
+        .clone()
+        .unwrap_or_else(|| defaults.iter().map(|name| name.to_string()).collect())
+}
+
+fn unknown_plugin(kind: &str, name: &str) {
+    println!(
+        "{} Unknown plugin `{}` in plugins.{}; skipping.",
+        "!".yellow(),
+        name,
+        kind
+    );
+}
+
+fn warn(plugin: &str, err: &Error) {
+    println!("{} Plugin `{}` failed: {}", "!".yellow(), plugin, err);
 }
 
 #[cfg(test)]
@@ -280,6 +330,10 @@ mod tests {
     struct Fixed(Vec<&'static str>);
 
     impl ReviewerSource for Fixed {
+        fn name(&self) -> &'static str {
+            "fixed"
+        }
+
         fn reviewers(&self, _ctx: &Context, _draft: &Draft) -> Result<Vec<String>> {
             Ok(self.0.iter().map(|r| r.to_string()).collect())
         }
@@ -288,6 +342,10 @@ mod tests {
     struct Failing;
 
     impl ReviewerSource for Failing {
+        fn name(&self) -> &'static str {
+            "failing"
+        }
+
         fn reviewers(&self, _ctx: &Context, _draft: &Draft) -> Result<Vec<String>> {
             Err(Error::Config("broken".into()))
         }
@@ -325,6 +383,10 @@ mod tests {
     }
 
     impl TicketSource for Tickets {
+        fn name(&self) -> &'static str {
+            "tickets"
+        }
+
         fn detect(&self, _ctx: &Context) -> Result<Option<Ticket>> {
             match self.detected {
                 Some("FAIL") => Err(Error::Config("broken".into())),
@@ -405,6 +467,10 @@ mod tests {
     struct Recording(Rc<Cell<bool>>);
 
     impl AfterCreate for Recording {
+        fn name(&self) -> &'static str {
+            "recording"
+        }
+
         fn run(
             &self,
             _ctx: &Context,
@@ -421,6 +487,10 @@ mod tests {
     struct FailingAfter;
 
     impl AfterCreate for FailingAfter {
+        fn name(&self) -> &'static str {
+            "failing_after"
+        }
+
         fn run(
             &self,
             _ctx: &Context,
@@ -437,6 +507,10 @@ mod tests {
     struct Append(&'static str);
 
     impl DraftHook for Append {
+        fn name(&self) -> &'static str {
+            "append"
+        }
+
         fn before_edit(&self, _ctx: &Context, draft: &mut Draft) -> Result<()> {
             draft.body.push_str(self.0);
             Ok(())
@@ -451,6 +525,10 @@ mod tests {
     struct FailingHook;
 
     impl DraftHook for FailingHook {
+        fn name(&self) -> &'static str {
+            "failing_hook"
+        }
+
         fn before_edit(&self, _ctx: &Context, _draft: &mut Draft) -> Result<()> {
             Err(Error::Config("broken".into()))
         }
@@ -523,5 +601,47 @@ mod tests {
         let registry = Registry::for_origin(&Config::default(), "git@gitlab.example.com:o/r.git");
 
         assert!(registry.is_err());
+    }
+
+    fn configured(yaml: &str) -> Registry {
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+        Registry::for_origin(&config, "git@github.com:o/r.git").unwrap()
+    }
+
+    fn ticket_source_names(registry: &Registry) -> Vec<&'static str> {
+        registry.ticket_sources.iter().map(|p| p.name()).collect()
+    }
+
+    fn draft_hook_names(registry: &Registry) -> Vec<&'static str> {
+        registry.draft_hooks.iter().map(|p| p.name()).collect()
+    }
+
+    fn after_create_names(registry: &Registry) -> Vec<&'static str> {
+        registry.after_create.iter().map(|p| p.name()).collect()
+    }
+
+    #[test]
+    fn test_missing_plugin_lists_use_defaults() {
+        let registry = configured("{}");
+
+        // Each built-in's name() matches the name that configures it
+        assert_eq!(ticket_source_names(&registry), DEFAULT_TICKET_SOURCES);
+        assert_eq!(draft_hook_names(&registry), DEFAULT_DRAFT_HOOKS);
+        assert_eq!(after_create_names(&registry), DEFAULT_AFTER_CREATE);
+    }
+
+    #[test]
+    fn test_empty_plugin_list_turns_kind_off() {
+        let registry = configured("plugins: { after_create: [] }");
+
+        assert!(after_create_names(&registry).is_empty());
+        assert_eq!(ticket_source_names(&registry), vec!["commit_tags"]);
+    }
+
+    #[test]
+    fn test_unknown_plugin_is_skipped() {
+        let registry = configured("plugins: { after_create: [teams, related_prs] }");
+
+        assert_eq!(after_create_names(&registry), vec!["related_prs"]);
     }
 }

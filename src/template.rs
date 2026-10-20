@@ -14,6 +14,10 @@ pub struct TemplateBody {
 }
 
 impl DraftHook for TemplateBody {
+    fn name(&self) -> &'static str {
+        "template_body"
+    }
+
     fn before_edit(&self, ctx: &Context, draft: &mut Draft) -> crate::Result<()> {
         draft.body = build_editor_body(&ctx.config, &self.repo_templates, draft.ticket.as_ref());
         Ok(())

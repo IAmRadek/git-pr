@@ -41,6 +41,8 @@ Generate a default config:
 git-pr --init
 ```
 
+If the config file exists, `--init` adds the sections that it is missing. It keeps your text and comments, and it writes the previous file to `config.yaml.bak`.
+
 Example:
 
 ```yaml
@@ -78,6 +80,19 @@ forges:
 ```
 
 If the host has no forge, `git-pr` stops with an error.
+
+## Plugins
+
+The `plugins` section lists the plugins of each kind, in run order. These are the built-in defaults:
+
+```yaml
+plugins:
+  ticket_sources: [commit_tags]   # the first detected ticket wins
+  draft_hooks: [template_body]    # run before and after the editor
+  after_create: [related_prs]     # run after the PR step
+```
+
+If a list is missing, `git-pr` uses its defaults. An empty list turns that kind off. If a name is unknown, `git-pr` prints a warning and skips it.
 
 ## Template Resolution
 

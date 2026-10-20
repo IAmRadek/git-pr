@@ -45,6 +45,10 @@ pub fn jira_ticket(config: &Config, id: String) -> Ticket {
 pub struct CommitTags;
 
 impl TicketSource for CommitTags {
+    fn name(&self) -> &'static str {
+        "commit_tags"
+    }
+
     fn detect(&self, ctx: &Context) -> crate::Result<Option<Ticket>> {
         Ok(extract_from_vec(ctx.branch.commits.clone())
             .map(|(tag, _)| jira_ticket(&ctx.config, tag)))

@@ -53,39 +53,52 @@ fn main() {
     }
 }
 
-/// Initialize a sample configuration file in the config directory
+/// Initialize a sample configuration file in the config directory,
+/// or add the sections that an existing file is missing
 fn init_config(config_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use git_pr::config;
     use std::path::PathBuf;
 
     let config_path = PathBuf::from(config_dir).join("config.yaml");
 
     // Ensure config directory exists
-    git_pr::config::ensure_config_dir_exists(std::path::Path::new(config_dir));
+    config::ensure_config_dir_exists(std::path::Path::new(config_dir));
 
-    // Check if config already exists
-    if config_path.exists() {
-        eprintln!(
-            "{} Configuration file already exists at: {}",
-            "Warning:".bright_yellow(),
+    if !config_path.exists() {
+        std::fs::write(&config_path, config::SAMPLE_CONFIG)?;
+        println!(
+            "{} Created configuration file at: {}",
+            "Success:".bright_green(),
             config_path.display()
         );
-        eprintln!("Use a text editor to modify the existing configuration.");
+        println!("The comments in the file describe each section.");
         return Ok(());
     }
 
-    // Generate and save sample config
-    let config = git_pr::Config::default();
-    config.save(config_dir)?;
+    let existing = std::fs::read_to_string(&config_path)?;
+    let missing = config::missing_sections(&existing)?;
 
+    if missing.is_empty() {
+        println!(
+            "{} Configuration file is up to date: {}",
+            "Success:".bright_green(),
+            config_path.display()
+        );
+        return Ok(());
+    }
+
+    let backup_path = config_path.with_extension("yaml.bak");
+    std::fs::copy(&config_path, &backup_path)?;
+    std::fs::write(&config_path, config::append_sections(&existing, &missing))?;
+
+    let keys: Vec<&str> = missing.iter().map(|(key, _)| *key).collect();
     println!(
-        "{} Created configuration file at: {}",
+        "{} Added sections {} to: {}",
         "Success:".bright_green(),
+        keys.join(", ").bright_cyan(),
         config_path.display()
     );
-    println!("\nYou can now edit this file to customize:");
-    println!("  - Jira URL for ticket linking");
-    println!("  - GitHub username for related PR discovery");
-    println!("  - Local PR template path and fallback body");
+    println!("The previous file is at: {}", backup_path.display());
 
     Ok(())
 }

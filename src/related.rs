@@ -11,6 +11,10 @@ use crate::template;
 pub struct RelatedPrs;
 
 impl AfterCreate for RelatedPrs {
+    fn name(&self) -> &'static str {
+        "related_prs"
+    }
+
     fn run(
         &self,
         ctx: &Context,
