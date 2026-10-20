@@ -1,10 +1,11 @@
 use std::io::{Read, Write};
 use std::path::Path;
 
-use inquire::autocompletion::Replacement;
-use inquire::{Autocomplete, CustomUserError};
 use lazy_static::lazy_static;
 use regex::Regex;
+
+use crate::config::Config;
+use crate::plugin::{Context, Ticket, TicketSource};
 
 lazy_static! {
     static ref PATTERN: Regex =
@@ -31,36 +32,30 @@ pub fn extract_from_str(message: &str) -> Option<String> {
     None
 }
 
+/// A ticket from a commit or PR title, linked to Jira when `jira.url` is set
+pub fn jira_ticket(config: &Config, id: String) -> Ticket {
+    Ticket {
+        url: config.jira_url().map(|url| format!("{}{}", url, id)),
+        id,
+        summary: None,
+    }
+}
+
+/// Detects the ticket from the first `[TAG]` in the branch commits
+pub struct CommitTags;
+
+impl TicketSource for CommitTags {
+    fn detect(&self, ctx: &Context) -> crate::Result<Option<Ticket>> {
+        Ok(extract_from_vec(ctx.branch.commits.clone())
+            .map(|(tag, _)| jira_ticket(&ctx.config, tag)))
+    }
+}
+
 /// Manages a collection of previously used tags with persistence
 #[derive(Debug, Default, Clone)]
 pub struct Tags {
     file: String,
     tags: Vec<String>,
-}
-
-impl Autocomplete for Tags {
-    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, CustomUserError> {
-        let mut suggestions = Vec::new();
-        for tag in self.tags.iter() {
-            if tag.starts_with(input) {
-                suggestions.push(tag.clone());
-            }
-        }
-        Ok(suggestions)
-    }
-
-    fn get_completion(
-        &mut self,
-        input: &str,
-        _highlighted_suggestion: Option<String>,
-    ) -> Result<Replacement, CustomUserError> {
-        for tag in self.tags.iter() {
-            if tag.starts_with(input) {
-                return Ok(Some(tag.clone()));
-            }
-        }
-        Ok(None)
-    }
 }
 
 impl Tags {
@@ -190,6 +185,47 @@ mod tests {
         let (tag, commit) = result.unwrap();
         assert_eq!(tag, "TRACK-123");
         assert_eq!(commit, "[TRACK-123]: Add feature");
+    }
+
+    #[test]
+    fn test_jira_ticket_links_when_jira_url_set() {
+        let mut config = Config::default();
+        config.jira.url = Some("https://jira.example.com/browse/".to_string());
+
+        let ticket = jira_ticket(&config, "TRACK-123".to_string());
+
+        assert_eq!(ticket.id, "TRACK-123");
+        assert_eq!(
+            ticket.url.as_deref(),
+            Some("https://jira.example.com/browse/TRACK-123")
+        );
+    }
+
+    #[test]
+    fn test_jira_ticket_without_jira_url() {
+        let ticket = jira_ticket(&Config::default(), "TRACK-123".to_string());
+
+        assert_eq!(ticket.url, None);
+    }
+
+    #[test]
+    fn test_commit_tags_detects_first_tag() {
+        let ctx = Context {
+            branch: crate::git::BranchInfo {
+                current_branch: "feature".into(),
+                bases: vec![],
+                commits: vec![
+                    "No tag".into(),
+                    "[TRACK-1]: A".into(),
+                    "[TRACK-2]: B".into(),
+                ],
+            },
+            config: Config::default(),
+        };
+
+        let ticket = CommitTags.detect(&ctx).unwrap();
+
+        assert_eq!(ticket.map(|t| t.id), Some("TRACK-1".to_string()));
     }
 
     #[test]

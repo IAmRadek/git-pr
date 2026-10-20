@@ -5,7 +5,20 @@ use std::fs;
 use std::path::PathBuf;
 
 use crate::config::Config;
-use crate::plugin::{Forge, PrRef, RemotePr, Ticket};
+use crate::plugin::{Context, Draft, DraftHook, Forge, PrRef, RemotePr, Ticket};
+
+/// Fills the draft body from the template before the editor opens
+pub struct TemplateBody {
+    /// The forge's template files, highest priority first
+    pub repo_templates: Vec<PathBuf>,
+}
+
+impl DraftHook for TemplateBody {
+    fn before_edit(&self, ctx: &Context, draft: &mut Draft) -> crate::Result<()> {
+        draft.body = build_editor_body(&ctx.config, &self.repo_templates, draft.ticket.as_ref());
+        Ok(())
+    }
+}
 
 /// `repo_templates` are the forge's template files, highest priority first
 pub fn resolve_body_template(config: &Config, repo_templates: &[PathBuf]) -> String {
@@ -170,6 +183,33 @@ mod tests {
         assert!(!body.contains("Ticket:"));
         assert!(!body.contains("Jira:"));
         assert!(body.contains("Related PRs:"));
+    }
+
+    #[test]
+    fn test_template_body_fills_draft_body() {
+        let mut config = Config::default();
+        config.template.body = "## From config\n".to_string();
+        let ctx = Context {
+            branch: crate::git::BranchInfo {
+                current_branch: "feature".into(),
+                bases: vec![],
+                commits: vec![],
+            },
+            config,
+        };
+        let mut draft = Draft {
+            ticket: Some(ticket("TRACK-1", None)),
+            ..Draft::default()
+        };
+
+        TemplateBody {
+            repo_templates: vec![],
+        }
+        .before_edit(&ctx, &mut draft)
+        .unwrap();
+
+        assert!(draft.body.starts_with("Ticket: TRACK-1\n"));
+        assert!(draft.body.ends_with("## From config\n"));
     }
 
     #[test]

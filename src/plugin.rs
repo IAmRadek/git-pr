@@ -12,6 +12,8 @@ use crate::error::{Error, Result};
 use crate::git::{self, BranchInfo};
 use crate::github::{GhForge, GhReviewers};
 use crate::related::RelatedPrs;
+use crate::tags::CommitTags;
+use crate::template::TemplateBody;
 
 /// State shared by every plugin during one run
 pub struct Context {
@@ -133,6 +135,10 @@ pub trait AfterCreate {
 /// The plugins active for one run
 pub struct Registry {
     pub forge: Box<dyn Forge>,
+    /// Asked in order; the first detected ticket wins
+    pub ticket_sources: Vec<Box<dyn TicketSource>>,
+    /// Run in order around the editor
+    pub draft_hooks: Vec<Box<dyn DraftHook>>,
     pub reviewer_source: Option<Box<dyn ReviewerSource>>,
     /// Run in order after the PR step
     pub after_create: Vec<Box<dyn AfterCreate>>,
@@ -155,6 +161,14 @@ impl Registry {
             }
         };
 
+        registry.ticket_sources.push(Box::new(CommitTags));
+        // First, so later hooks change the filled template
+        registry.draft_hooks.insert(
+            0,
+            Box::new(TemplateBody {
+                repo_templates: registry.forge.templates(),
+            }),
+        );
         registry.after_create.push(Box::new(RelatedPrs));
         Ok(registry)
     }
@@ -164,9 +178,60 @@ impl Registry {
             forge: Box::new(GhForge {
                 user: config.github_user(),
             }),
+            ticket_sources: vec![],
+            draft_hooks: vec![],
             reviewer_source: Some(Box::new(GhReviewers)),
             after_create: vec![],
         }
+    }
+
+    /// Runs `DraftHook::before_edit` in order. A failing hook prints a warning.
+    pub fn before_edit(&self, ctx: &Context, draft: &mut Draft) {
+        for hook in &self.draft_hooks {
+            if let Err(err) = hook.before_edit(ctx, draft) {
+                warn(&err);
+            }
+        }
+    }
+
+    /// Runs `DraftHook::after_edit` in order. A failing hook prints a warning.
+    pub fn after_edit(&self, ctx: &Context, draft: &mut Draft) {
+        for hook in &self.draft_hooks {
+            if let Err(err) = hook.after_edit(ctx, draft) {
+                warn(&err);
+            }
+        }
+    }
+
+    /// The first ticket that a source detects. A failing source prints a warning.
+    pub fn detect_ticket(&self, ctx: &Context) -> Option<Ticket> {
+        self.ticket_sources.iter().find_map(|source| {
+            source.detect(ctx).unwrap_or_else(|err| {
+                warn(&err);
+                None
+            })
+        })
+    }
+
+    /// Tickets from all sources, without duplicate ids, in source order.
+    /// A failing source prints a warning.
+    pub fn suggest_tickets(&self, ctx: &Context) -> Vec<Ticket> {
+        let mut tickets: Vec<Ticket> = Vec::new();
+
+        for source in &self.ticket_sources {
+            match source.suggest(ctx) {
+                Ok(found) => {
+                    for ticket in found {
+                        if !tickets.iter().any(|t| t.id == ticket.id) {
+                            tickets.push(ticket);
+                        }
+                    }
+                }
+                Err(err) => warn(&err),
+            }
+        }
+
+        tickets
     }
 
     /// Runs the `AfterCreate` plugins. A failing plugin prints a warning.
@@ -246,6 +311,97 @@ mod tests {
         }
     }
 
+    /// Detects `detected`, suggests `suggested`, or fails both when `detected` is "FAIL"
+    struct Tickets {
+        detected: Option<&'static str>,
+        suggested: Vec<&'static str>,
+    }
+
+    fn ticket(id: &str) -> Ticket {
+        Ticket {
+            id: id.to_string(),
+            ..Ticket::default()
+        }
+    }
+
+    impl TicketSource for Tickets {
+        fn detect(&self, _ctx: &Context) -> Result<Option<Ticket>> {
+            match self.detected {
+                Some("FAIL") => Err(Error::Config("broken".into())),
+                other => Ok(other.map(ticket)),
+            }
+        }
+
+        fn suggest(&self, _ctx: &Context) -> Result<Vec<Ticket>> {
+            if self.detected == Some("FAIL") {
+                return Err(Error::Config("broken".into()));
+            }
+            Ok(self.suggested.iter().map(|id| ticket(id)).collect())
+        }
+    }
+
+    fn with_ticket_sources(sources: Vec<Tickets>) -> Registry {
+        let mut registry = registry(None);
+        registry.ticket_sources = sources
+            .into_iter()
+            .map(|s| Box::new(s) as Box<dyn TicketSource>)
+            .collect();
+        registry
+    }
+
+    #[test]
+    fn test_detect_ticket_first_source_wins_after_failure() {
+        let registry = with_ticket_sources(vec![
+            Tickets {
+                detected: Some("FAIL"),
+                suggested: vec![],
+            },
+            Tickets {
+                detected: None,
+                suggested: vec![],
+            },
+            Tickets {
+                detected: Some("A-1"),
+                suggested: vec![],
+            },
+            Tickets {
+                detected: Some("B-1"),
+                suggested: vec![],
+            },
+        ]);
+
+        assert_eq!(
+            registry.detect_ticket(&ctx()).map(|t| t.id),
+            Some("A-1".into())
+        );
+    }
+
+    #[test]
+    fn test_suggest_tickets_merged_without_duplicates() {
+        let registry = with_ticket_sources(vec![
+            Tickets {
+                detected: None,
+                suggested: vec!["A-1", "A-2"],
+            },
+            Tickets {
+                detected: Some("FAIL"),
+                suggested: vec![],
+            },
+            Tickets {
+                detected: None,
+                suggested: vec!["A-2", "B-1"],
+            },
+        ]);
+
+        let ids: Vec<String> = registry
+            .suggest_tickets(&ctx())
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+
+        assert_eq!(ids, vec!["A-1", "A-2", "B-1"]);
+    }
+
     struct Recording(Rc<Cell<bool>>);
 
     impl AfterCreate for Recording {
@@ -275,6 +431,50 @@ mod tests {
         ) -> Result<()> {
             Err(Error::Config("broken".into()))
         }
+    }
+
+    /// Appends its text to the body: lowercase before the editor, uppercase after
+    struct Append(&'static str);
+
+    impl DraftHook for Append {
+        fn before_edit(&self, _ctx: &Context, draft: &mut Draft) -> Result<()> {
+            draft.body.push_str(self.0);
+            Ok(())
+        }
+
+        fn after_edit(&self, _ctx: &Context, draft: &mut Draft) -> Result<()> {
+            draft.body.push_str(&self.0.to_uppercase());
+            Ok(())
+        }
+    }
+
+    struct FailingHook;
+
+    impl DraftHook for FailingHook {
+        fn before_edit(&self, _ctx: &Context, _draft: &mut Draft) -> Result<()> {
+            Err(Error::Config("broken".into()))
+        }
+
+        fn after_edit(&self, _ctx: &Context, _draft: &mut Draft) -> Result<()> {
+            Err(Error::Config("broken".into()))
+        }
+    }
+
+    #[test]
+    fn test_draft_hooks_run_in_order_past_a_failing_hook() {
+        let mut registry = registry(None);
+        registry.draft_hooks = vec![
+            Box::new(Append("a")),
+            Box::new(FailingHook),
+            Box::new(Append("b")),
+        ];
+        let mut draft = Draft::default();
+
+        registry.before_edit(&ctx(), &mut draft);
+        assert_eq!(draft.body, "ab");
+
+        registry.after_edit(&ctx(), &mut draft);
+        assert_eq!(draft.body, "abAB");
     }
 
     #[test]

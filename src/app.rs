@@ -4,8 +4,7 @@ use crate::config::{self, Config};
 use crate::error::{Error, Result};
 use crate::git;
 use crate::plugin::{Context, Draft, PrRef, Registry, Ticket};
-use crate::tags::Tags;
-use crate::template;
+use crate::tags::{jira_ticket, Tags};
 use crate::ui;
 
 pub fn run(args: crate::cli::Args) -> Result<()> {
@@ -43,13 +42,7 @@ pub fn run(args: crate::cli::Args) -> Result<()> {
         None
     };
 
-    let mut pr = build_pr_from_branch(
-        &ctx.config,
-        &ctx.branch,
-        &mut tags,
-        remote_tag,
-        args.update_only,
-    )?;
+    let mut pr = build_pr_from_branch(&ctx, &registry, &mut tags, remote_tag, args.update_only)?;
 
     pr.base = select_base_branch(&ctx.branch)?;
 
@@ -66,8 +59,8 @@ pub fn run(args: crate::cli::Args) -> Result<()> {
 }
 
 fn build_pr_from_branch(
-    config: &Config,
-    branch_info: &git::BranchInfo,
+    ctx: &Context,
+    registry: &Registry,
     tags: &mut Tags,
     remote_tag: Option<String>,
     update_only: bool,
@@ -76,7 +69,7 @@ fn build_pr_from_branch(
         tags.add_and_save(tag.clone())?;
         println!("{} PR Tag: {}", ">".bright_green(), tag.bright_cyan());
         return Ok(Draft {
-            ticket: Some(jira_ticket(config, tag)),
+            ticket: Some(jira_ticket(&ctx.config, tag)),
             ..Draft::default()
         });
     }
@@ -89,56 +82,58 @@ fn build_pr_from_branch(
         return Ok(Draft::default());
     }
 
-    let found_tag = crate::tags::extract_from_vec(branch_info.commits.clone());
-
-    if let Some((tag, commit)) = found_tag {
-        tags.add_and_save(tag.clone())?;
-
-        println!("{} PR title: {}", ">".bright_green(), commit.bright_cyan());
-        println!("{} PR Tag: {}", ">".bright_green(), tag.bright_cyan());
-
-        Ok(Draft {
-            ticket: Some(jira_ticket(config, tag)),
-            title: commit,
-            ..Draft::default()
-        })
-    } else {
-        let selected_tag = ui::prompt_tag(tags)?;
-
-        let default_title = ui::default_pr_title(branch_info);
-        let full_title = match &selected_tag {
-            Some(tag) => {
-                tags.add(tag.clone());
-                tags.save()?;
-                format!("[{}]: {}", tag, default_title)
+    let (ticket, title) = match registry.detect_ticket(ctx) {
+        Some(ticket) => {
+            let title = pr_title(&ctx.branch, Some(&ticket));
+            println!("{} PR title: {}", ">".bright_green(), title.bright_cyan());
+            println!("{} PR Tag: {}", ">".bright_green(), ticket.id.bright_cyan());
+            (Some(ticket), title)
+        }
+        None => {
+            // Recent tags first, then the tickets that plugins suggest
+            let mut suggestions: Vec<String> = tags.iter().cloned().collect();
+            for ticket in registry.suggest_tickets(ctx) {
+                if !suggestions.contains(&ticket.id) {
+                    suggestions.push(ticket.id);
+                }
             }
-            None => default_title,
-        };
 
-        println!(
-            "{} PR title: {}",
-            ">".bright_green(),
-            full_title.bright_cyan()
-        );
-
-        Ok(Draft {
-            ticket: selected_tag.map(|id| Ticket {
+            let ticket = ui::prompt_tag(suggestions)?.map(|id| Ticket {
                 id,
                 ..Ticket::default()
-            }),
-            title: full_title,
-            ..Draft::default()
-        })
+            });
+            let title = pr_title(&ctx.branch, ticket.as_ref());
+            println!("{} PR title: {}", ">".bright_green(), title.bright_cyan());
+            (ticket, title)
+        }
+    };
+
+    if let Some(ticket) = &ticket {
+        tags.add_and_save(ticket.id.clone())?;
     }
+
+    Ok(Draft {
+        ticket,
+        title,
+        ..Draft::default()
+    })
 }
 
-/// A ticket from a commit or PR title, linked to Jira when `jira.url` is set
-fn jira_ticket(config: &Config, id: String) -> Ticket {
-    Ticket {
-        url: config.jira_url().map(|url| format!("{}{}", url, id)),
-        id,
-        summary: None,
-    }
+/// The commit that carries `[ID]`, else `[ID]: <default title>`
+fn pr_title(branch: &git::BranchInfo, ticket: Option<&Ticket>) -> String {
+    let default_title = ui::default_pr_title(branch);
+
+    let Some(ticket) = ticket else {
+        return default_title;
+    };
+
+    let marker = format!("[{}]", ticket.id);
+    branch
+        .commits
+        .iter()
+        .find(|commit| commit.contains(&marker))
+        .cloned()
+        .unwrap_or_else(|| format!("{}: {}", marker, default_title))
 }
 
 fn select_base_branch(branch_info: &git::BranchInfo) -> Result<String> {
@@ -155,41 +150,59 @@ fn select_base_branch(branch_info: &git::BranchInfo) -> Result<String> {
     }
 }
 
-fn gather_pr_details(ctx: &Context, registry: &Registry, pr: Draft) -> Result<Draft> {
-    let initial_body =
-        template::build_editor_body(&ctx.config, &registry.forge.templates(), pr.ticket.as_ref());
-    let pr = Draft {
-        body: ui::prompt_body(&initial_body)?,
-        ..pr
-    };
+fn gather_pr_details(ctx: &Context, registry: &Registry, mut pr: Draft) -> Result<Draft> {
+    registry.before_edit(ctx, &mut pr);
+    pr.body = ui::prompt_body(&pr.body)?;
+    registry.after_edit(ctx, &mut pr);
 
-    let reviewers = ui::prompt_reviewers(registry.reviewers(ctx, &pr))?;
+    pr.reviewers = ui::prompt_reviewers(registry.reviewers(ctx, &pr))?;
 
-    Ok(Draft { reviewers, ..pr })
+    Ok(pr)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn branch(commits: &[&str]) -> git::BranchInfo {
+        git::BranchInfo {
+            current_branch: "feature".into(),
+            bases: vec![],
+            commits: commits.iter().map(|c| c.to_string()).collect(),
+        }
+    }
+
+    fn ticket(id: &str) -> Ticket {
+        Ticket {
+            id: id.to_string(),
+            ..Ticket::default()
+        }
+    }
+
     #[test]
-    fn test_jira_ticket_links_when_jira_url_set() {
-        let mut config = Config::default();
-        config.jira.url = Some("https://jira.example.com/browse/".to_string());
+    fn test_pr_title_uses_commit_with_ticket() {
+        let branch = branch(&["newest", "[TRACK-1]: tagged", "oldest"]);
 
-        let ticket = jira_ticket(&config, "TRACK-123".to_string());
-
-        assert_eq!(ticket.id, "TRACK-123");
         assert_eq!(
-            ticket.url.as_deref(),
-            Some("https://jira.example.com/browse/TRACK-123")
+            pr_title(&branch, Some(&ticket("TRACK-1"))),
+            "[TRACK-1]: tagged"
         );
     }
 
     #[test]
-    fn test_jira_ticket_without_jira_url() {
-        let ticket = jira_ticket(&Config::default(), "TRACK-123".to_string());
+    fn test_pr_title_prefixes_oldest_commit_for_typed_ticket() {
+        let branch = branch(&["newest", "oldest"]);
 
-        assert_eq!(ticket.url, None);
+        assert_eq!(
+            pr_title(&branch, Some(&ticket("TRACK-1"))),
+            "[TRACK-1]: oldest"
+        );
+    }
+
+    #[test]
+    fn test_pr_title_without_ticket() {
+        let branch = branch(&["newest", "oldest"]);
+
+        assert_eq!(pr_title(&branch, None), "oldest");
     }
 }

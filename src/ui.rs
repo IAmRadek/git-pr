@@ -1,6 +1,9 @@
+use inquire::autocompletion::Replacement;
 use inquire::error::InquireError;
 use inquire::ui::{Color, RenderConfig, Styled};
-use inquire::{set_global_render_config, Editor, MultiSelect, Select, Text};
+use inquire::{
+    set_global_render_config, Autocomplete, CustomUserError, Editor, MultiSelect, Select, Text,
+};
 
 use crate::error::Error;
 use crate::git::BranchInfo;
@@ -12,7 +15,36 @@ pub fn init_render_config() {
     set_global_render_config(style);
 }
 
-pub fn prompt_tag(tags: &Tags) -> Result<Option<String>, Error> {
+/// Tag completion: suggestions that start with the input, in list order
+#[derive(Clone)]
+struct Suggestions(Vec<String>);
+
+impl Autocomplete for Suggestions {
+    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, CustomUserError> {
+        let mut suggestions = Vec::new();
+        for tag in self.0.iter() {
+            if tag.starts_with(input) {
+                suggestions.push(tag.clone());
+            }
+        }
+        Ok(suggestions)
+    }
+
+    fn get_completion(
+        &mut self,
+        input: &str,
+        _highlighted_suggestion: Option<String>,
+    ) -> Result<Replacement, CustomUserError> {
+        for tag in self.0.iter() {
+            if tag.starts_with(input) {
+                return Ok(Some(tag.clone()));
+            }
+        }
+        Ok(None)
+    }
+}
+
+pub fn prompt_tag(suggestions: Vec<String>) -> Result<Option<String>, Error> {
     let normalize = |tag: String| {
         let tag = tag.trim().to_string();
         if tag.is_empty() {
@@ -22,7 +54,7 @@ pub fn prompt_tag(tags: &Tags) -> Result<Option<String>, Error> {
         }
     };
 
-    if tags.is_empty() {
+    if suggestions.is_empty() {
         Text::new("PR Tag:")
             .with_validator(Tags::optional_validator)
             .prompt()
@@ -30,7 +62,7 @@ pub fn prompt_tag(tags: &Tags) -> Result<Option<String>, Error> {
             .map_err(map_inquire_error)
     } else {
         Text::new("PR Tag:")
-            .with_autocomplete(tags.clone())
+            .with_autocomplete(Suggestions(suggestions))
             .with_validator(Tags::optional_validator)
             .prompt()
             .map(normalize)
