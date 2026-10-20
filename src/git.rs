@@ -181,6 +181,11 @@ fn collect_all_branch_commits(
     Ok(commits)
 }
 
+/// The first line of a commit message
+pub fn subject(message: &str) -> &str {
+    message.lines().next().unwrap_or("").trim()
+}
+
 fn is_main(name: &str) -> bool {
     const PROTECTED_BRANCHES: &[&str] = &["master", "main", "development", "stage", "production"];
     PROTECTED_BRANCHES.contains(&name)

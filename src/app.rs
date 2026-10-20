@@ -119,7 +119,8 @@ fn build_pr_from_branch(
     })
 }
 
-/// The commit that carries `[ID]`, else `[ID]: <default title>`
+/// The subject of the commit that carries `[ID]`, else `[ID]: <default title>`.
+/// A subject without `[ID]` (the tag is in the commit body) gets the `[ID]: ` prefix.
 fn pr_title(branch: &git::BranchInfo, ticket: Option<&Ticket>) -> String {
     let default_title = ui::default_pr_title(branch);
 
@@ -128,12 +129,18 @@ fn pr_title(branch: &git::BranchInfo, ticket: Option<&Ticket>) -> String {
     };
 
     let marker = format!("[{}]", ticket.id);
-    branch
+    let subject = branch
         .commits
         .iter()
         .find(|commit| commit.contains(&marker))
-        .cloned()
-        .unwrap_or_else(|| format!("{}: {}", marker, default_title))
+        .map(|commit| git::subject(commit))
+        .unwrap_or(&default_title);
+
+    if subject.contains(&marker) {
+        subject.to_string()
+    } else {
+        format!("{}: {}", marker, subject)
+    }
 }
 
 fn select_base_branch(branch_info: &git::BranchInfo) -> Result<String> {
@@ -204,5 +211,32 @@ mod tests {
         let branch = branch(&["newest", "oldest"]);
 
         assert_eq!(pr_title(&branch, None), "oldest");
+    }
+
+    #[test]
+    fn test_pr_title_is_first_line_of_tagged_commit() {
+        let branch = branch(&["[TRACK-1]: tagged\n\nLonger description", "oldest"]);
+
+        assert_eq!(
+            pr_title(&branch, Some(&ticket("TRACK-1"))),
+            "[TRACK-1]: tagged"
+        );
+    }
+
+    #[test]
+    fn test_pr_title_prefixes_subject_when_tag_is_in_body() {
+        let branch = branch(&["Add feature\n\nRefs [TRACK-1]", "oldest"]);
+
+        assert_eq!(
+            pr_title(&branch, Some(&ticket("TRACK-1"))),
+            "[TRACK-1]: Add feature"
+        );
+    }
+
+    #[test]
+    fn test_pr_title_without_ticket_is_first_line_of_oldest_commit() {
+        let branch = branch(&["newest", "Oldest subject\n\nBody text"]);
+
+        assert_eq!(pr_title(&branch, None), "Oldest subject");
     }
 }

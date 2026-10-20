@@ -114,7 +114,7 @@ pub fn default_pr_title(branch_info: &BranchInfo) -> String {
     branch_info
         .commits
         .last()
-        .cloned()
+        .map(|commit| crate::git::subject(commit).to_string())
         .unwrap_or_else(|| "Update pull request".to_string())
 }
 
