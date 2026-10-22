@@ -7,10 +7,11 @@ use std::path::PathBuf;
 
 use colored::Colorize;
 
-use crate::config::{Config, ForgeKind, PluginsConfig};
+use crate::config::{Config, ForgeKind};
 use crate::error::{Error, Result};
 use crate::git::{self, BranchInfo};
 use crate::github::{GhForge, GhReviewers};
+use crate::jira::JiraTickets;
 use crate::related::RelatedPrs;
 use crate::tags::CommitTags;
 use crate::template::TemplateBody;
@@ -173,15 +174,22 @@ impl Registry {
             }
         };
 
-        registry.add_configured(&config.plugins);
+        registry.add_configured(config);
         Ok(registry)
     }
 
-    /// Adds the plugins named in `plugins`, in order. An unknown name prints a warning.
-    fn add_configured(&mut self, plugins: &PluginsConfig) {
+    /// Adds the plugins named in `plugins`, in order. An unknown name, or a
+    /// plugin with a wrong configuration, prints a warning and is skipped.
+    fn add_configured(&mut self, config: &Config) {
+        let plugins = &config.plugins;
+
         for name in names(&plugins.ticket_sources, DEFAULT_TICKET_SOURCES) {
             match name.as_str() {
                 "commit_tags" => self.ticket_sources.push(Box::new(CommitTags)),
+                "jira" => match JiraTickets::from_config(config) {
+                    Ok(jira) => self.ticket_sources.push(Box::new(jira)),
+                    Err(err) => warn("jira", &err),
+                },
                 other => unknown_plugin("ticket_sources", other),
             }
         }
@@ -643,5 +651,12 @@ mod tests {
         let registry = configured("plugins: { after_create: [teams, related_prs] }");
 
         assert_eq!(after_create_names(&registry), vec!["related_prs"]);
+    }
+
+    #[test]
+    fn test_jira_without_url_is_skipped() {
+        let registry = configured("plugins: { ticket_sources: [commit_tags, jira] }");
+
+        assert_eq!(ticket_source_names(&registry), vec!["commit_tags"]);
     }
 }

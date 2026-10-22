@@ -29,6 +29,9 @@ pub enum Error {
     #[error("Environment variable not set: {0}")]
     EnvVar(String),
 
+    #[error("Jira error: {0}")]
+    Jira(String),
+
     #[error("Configuration error: {0}")]
     Config(String),
 

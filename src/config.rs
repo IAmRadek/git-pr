@@ -54,10 +54,38 @@ pub enum ForgeKind {
 
 const DEFAULT_FORGES: &[(&str, ForgeKind)] = &[("github.com", ForgeKind::Github)];
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub const DEFAULT_JQL: &str =
+    "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct JiraConfig {
+    /// The ticket link prefix, ending in `/browse/`. The `jira` plugin also
+    /// derives the API address from it.
     pub url: Option<String>,
+    /// Chooses the authentication and the search endpoint of the `jira` plugin
+    pub kind: JiraKind,
+    /// The query for the tickets that the `jira` plugin suggests
+    pub jql: String,
+}
+
+impl Default for JiraConfig {
+    fn default() -> Self {
+        Self {
+            url: None,
+            kind: JiraKind::default(),
+            jql: DEFAULT_JQL.to_string(),
+        }
+    }
+}
+
+/// Jira Cloud (atlassian.net) or a self-hosted Data Center or Server
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JiraKind {
+    #[default]
+    Cloud,
+    Datacenter,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -382,6 +410,8 @@ forges:
         let defaults = Config::default();
 
         assert_eq!(config.jira.url, defaults.jira.url);
+        assert_eq!(config.jira.kind, defaults.jira.kind);
+        assert_eq!(config.jira.jql, DEFAULT_JQL);
         assert_eq!(config.github.user, defaults.github.user);
         assert!(config.forges.is_empty());
         assert!(config.plugins.ticket_sources.is_none());

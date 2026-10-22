@@ -94,6 +94,21 @@ plugins:
 
 If a list is missing, `git-pr` uses its defaults. An empty list turns that kind off. If a name is unknown, `git-pr` prints a warning and skips it.
 
+### Jira
+
+The `jira` ticket source suggests tickets at the `PR Tag:` prompt. It runs the query in `jira.jql` and detects nothing. If its `jira` section or a token variable is wrong, `git-pr` prints a warning and skips it.
+
+```yaml
+jira:
+  url: "https://yourcompany.atlassian.net/browse/"   # the API address is the part before browse/
+  kind: cloud                                        # or datacenter
+  jql: "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
+plugins:
+  ticket_sources: [commit_tags, jira]
+```
+
+The token comes from the environment. Jira Cloud needs `JIRA_USER` (the account email) and `JIRA_TOKEN` (an API token). Data Center needs `JIRA_TOKEN` (a personal access token).
+
 ## Template Resolution
 
 The initial PR body is resolved in this order:

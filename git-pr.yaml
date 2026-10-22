@@ -5,8 +5,12 @@
 
 # Jira links. If a ticket comes from a commit or PR title, the PR body links
 # it as <url><ticket>. If this is not set, JIRA_URL is used.
+# The `jira` ticket source suggests the tickets that `jql` finds. It reads the
+# token from JIRA_TOKEN and, for Cloud, the account email from JIRA_USER.
 jira:
   url: null # e.g. "https://company.atlassian.net/browse/"
+  kind: cloud # or datacenter
+  jql: "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
 
 # The user whose open PRs git-pr links as related PRs. If this is not set,
 # GITHUB_USER is used, then the user that `gh` is logged in as.
@@ -19,7 +23,7 @@ forges: {}
 
 # The plugins of each kind, in run order. A missing list uses the defaults.
 # An empty list ([]) turns that kind off. The defaults are:
-#   ticket_sources: [commit_tags]   # the first detected ticket wins
+#   ticket_sources: [commit_tags]   # the first detected ticket wins; add jira for suggestions
 #   draft_hooks: [template_body]    # run before and after the editor
 #   after_create: [related_prs]     # run after the PR step
 plugins: {}
