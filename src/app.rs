@@ -130,7 +130,8 @@ fn merge_suggestions(tags: &Tags, suggested: Vec<Ticket>) -> Vec<Ticket> {
     tickets
 }
 
-/// The subject of the commit that carries `[ID]`, else `[ID]: <default title>`.
+/// The subject of the commit that carries `[ID]`, else `[ID]: <ticket summary>`,
+/// else `[ID]: <default title>`.
 /// A subject without `[ID]` (the tag is in the commit body) gets the `[ID]: ` prefix.
 fn pr_title(branch: &git::BranchInfo, ticket: Option<&Ticket>) -> String {
     let default_title = ui::default_pr_title(branch);
@@ -145,6 +146,7 @@ fn pr_title(branch: &git::BranchInfo, ticket: Option<&Ticket>) -> String {
         .iter()
         .find(|commit| commit.contains(&marker))
         .map(|commit| git::subject(commit))
+        .or(ticket.summary.as_deref())
         .unwrap_or(&default_title);
 
     if subject.contains(&marker) {
@@ -231,6 +233,28 @@ mod tests {
             pr_title(&branch, Some(&ticket("TRACK-1"))),
             "[TRACK-1]: oldest"
         );
+    }
+
+    #[test]
+    fn test_pr_title_uses_summary_when_no_commit_has_ticket() {
+        let branch = branch(&["newest", "oldest"]);
+        let ticket = Ticket {
+            summary: Some("Fix login".to_string()),
+            ..ticket("TRACK-1")
+        };
+
+        assert_eq!(pr_title(&branch, Some(&ticket)), "[TRACK-1]: Fix login");
+    }
+
+    #[test]
+    fn test_pr_title_prefers_tagged_commit_over_summary() {
+        let branch = branch(&["[TRACK-1]: tagged", "oldest"]);
+        let ticket = Ticket {
+            summary: Some("Fix login".to_string()),
+            ..ticket("TRACK-1")
+        };
+
+        assert_eq!(pr_title(&branch, Some(&ticket)), "[TRACK-1]: tagged");
     }
 
     #[test]
