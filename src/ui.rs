@@ -1,3 +1,4 @@
+use colored::Colorize;
 use inquire::autocompletion::Replacement;
 use inquire::error::InquireError;
 use inquire::ui::{Color, RenderConfig, Styled};
@@ -87,18 +88,35 @@ fn answer_ticket(answer: &str, suggestions: &[Ticket]) -> Option<Ticket> {
 
 pub fn prompt_tag(suggestions: Vec<Ticket>) -> Result<Option<Ticket>, Error> {
     let validator = |answer: &str| Tags::optional_validator(answer_id(answer));
+    let formatter = &|answer: &str| answer_id(answer).to_string();
 
     let answer = if suggestions.is_empty() {
-        Text::new("PR Tag:").with_validator(validator).prompt()
+        Text::new("PR Tag:")
+            .with_validator(validator)
+            .with_formatter(formatter)
+            .prompt()
     } else {
         Text::new("PR Tag:")
             .with_autocomplete(Suggestions(suggestions.clone()))
             .with_validator(validator)
+            .with_formatter(formatter)
             .prompt()
     }
     .map_err(map_inquire_error)?;
 
-    Ok(answer_ticket(&answer, &suggestions))
+    let ticket = answer_ticket(&answer, &suggestions);
+
+    // The summary on its own line, under the id
+    if let Some(summary) = ticket.as_ref().and_then(|t| t.summary.as_deref()) {
+        println!(
+            "{:width$}{}",
+            "",
+            summary.dimmed(),
+            width = "> PR Tag: ".len()
+        );
+    }
+
+    Ok(ticket)
 }
 
 pub fn prompt_base(bases: Vec<String>) -> Result<String, Error> {
