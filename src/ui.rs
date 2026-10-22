@@ -7,6 +7,7 @@ use inquire::{
 
 use crate::error::Error;
 use crate::git::BranchInfo;
+use crate::plugin::Ticket;
 use crate::tags::Tags;
 
 pub fn init_render_config() {
@@ -15,59 +16,89 @@ pub fn init_render_config() {
     set_global_render_config(style);
 }
 
-/// Tag completion: suggestions that start with the input, in list order
+/// Ticket completion, in list order. A suggestion shows as "ID  summary" and
+/// matches an input that starts its id or occurs in its summary.
 #[derive(Clone)]
-struct Suggestions(Vec<String>);
+struct Suggestions(Vec<Ticket>);
 
-impl Autocomplete for Suggestions {
-    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, CustomUserError> {
-        let mut suggestions = Vec::new();
-        for tag in self.0.iter() {
-            if tag.starts_with(input) {
-                suggestions.push(tag.clone());
-            }
-        }
-        Ok(suggestions)
-    }
-
-    fn get_completion(
-        &mut self,
-        input: &str,
-        _highlighted_suggestion: Option<String>,
-    ) -> Result<Replacement, CustomUserError> {
-        for tag in self.0.iter() {
-            if tag.starts_with(input) {
-                return Ok(Some(tag.clone()));
-            }
-        }
-        Ok(None)
+impl Suggestions {
+    fn matching<'a>(&'a self, input: &'a str) -> impl Iterator<Item = &'a Ticket> + 'a {
+        let needle = input.trim().to_lowercase();
+        self.0.iter().filter(move |ticket| {
+            ticket.id.to_lowercase().starts_with(&needle)
+                || ticket
+                    .summary
+                    .as_deref()
+                    .is_some_and(|summary| summary.to_lowercase().contains(&needle))
+        })
     }
 }
 
-pub fn prompt_tag(suggestions: Vec<String>) -> Result<Option<String>, Error> {
-    let normalize = |tag: String| {
-        let tag = tag.trim().to_string();
-        if tag.is_empty() {
-            None
-        } else {
-            Some(tag)
-        }
-    };
+impl Autocomplete for Suggestions {
+    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, CustomUserError> {
+        Ok(self.matching(input).map(label).collect())
+    }
 
-    if suggestions.is_empty() {
-        Text::new("PR Tag:")
-            .with_validator(Tags::optional_validator)
-            .prompt()
-            .map(normalize)
-            .map_err(map_inquire_error)
+    /// Tab completes to the id of the highlighted suggestion, else of the first match
+    fn get_completion(
+        &mut self,
+        input: &str,
+        highlighted_suggestion: Option<String>,
+    ) -> Result<Replacement, CustomUserError> {
+        if let Some(highlighted) = highlighted_suggestion {
+            return Ok(Some(answer_id(&highlighted).to_string()));
+        }
+        Ok(self.matching(input).next().map(|ticket| ticket.id.clone()))
+    }
+}
+
+/// How a suggestion shows at the prompt: "ID" or "ID  summary"
+fn label(ticket: &Ticket) -> String {
+    match &ticket.summary {
+        Some(summary) => format!("{}  {}", ticket.id, summary),
+        None => ticket.id.clone(),
+    }
+}
+
+/// The id in a prompt answer, which is a typed id or a suggestion label
+fn answer_id(answer: &str) -> &str {
+    answer.split_whitespace().next().unwrap_or("")
+}
+
+/// The suggested ticket with the answer's id, else a ticket with only that id.
+/// `None` for an empty answer.
+fn answer_ticket(answer: &str, suggestions: &[Ticket]) -> Option<Ticket> {
+    let id = answer_id(answer);
+    if id.is_empty() {
+        return None;
+    }
+
+    Some(
+        suggestions
+            .iter()
+            .find(|ticket| ticket.id == id)
+            .cloned()
+            .unwrap_or_else(|| Ticket {
+                id: id.to_string(),
+                ..Ticket::default()
+            }),
+    )
+}
+
+pub fn prompt_tag(suggestions: Vec<Ticket>) -> Result<Option<Ticket>, Error> {
+    let validator = |answer: &str| Tags::optional_validator(answer_id(answer));
+
+    let answer = if suggestions.is_empty() {
+        Text::new("PR Tag:").with_validator(validator).prompt()
     } else {
         Text::new("PR Tag:")
-            .with_autocomplete(Suggestions(suggestions))
-            .with_validator(Tags::optional_validator)
+            .with_autocomplete(Suggestions(suggestions.clone()))
+            .with_validator(validator)
             .prompt()
-            .map(normalize)
-            .map_err(map_inquire_error)
     }
+    .map_err(map_inquire_error)?;
+
+    Ok(answer_ticket(&answer, &suggestions))
 }
 
 pub fn prompt_base(bases: Vec<String>) -> Result<String, Error> {
@@ -122,5 +153,80 @@ fn map_inquire_error(err: InquireError) -> Error {
     match err {
         InquireError::OperationCanceled | InquireError::OperationInterrupted => Error::Cancelled,
         _ => Error::Prompt(err.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ticket(id: &str, summary: Option<&str>) -> Ticket {
+        Ticket {
+            id: id.to_string(),
+            url: Some(format!("https://jira.example.com/browse/{}", id)),
+            summary: summary.map(str::to_string),
+        }
+    }
+
+    fn suggestions() -> Suggestions {
+        Suggestions(vec![
+            ticket("TRACK-1", Some("Fix login")),
+            ticket("TRACK-2", None),
+            ticket("OPS-3", Some("Rotate track logs")),
+        ])
+    }
+
+    #[test]
+    fn test_suggestions_show_summary() {
+        assert_eq!(
+            suggestions().get_suggestions("TRACK").unwrap(),
+            vec!["TRACK-1  Fix login", "TRACK-2", "OPS-3  Rotate track logs"]
+        );
+    }
+
+    #[test]
+    fn test_suggestions_match_summary() {
+        assert_eq!(
+            suggestions().get_suggestions("login").unwrap(),
+            vec!["TRACK-1  Fix login"]
+        );
+    }
+
+    #[test]
+    fn test_completion_is_the_id() {
+        let mut suggestions = suggestions();
+
+        assert_eq!(
+            suggestions
+                .get_completion("TR", Some("TRACK-1  Fix login".to_string()))
+                .unwrap(),
+            Some("TRACK-1".to_string())
+        );
+        assert_eq!(
+            suggestions.get_completion("OPS", None).unwrap(),
+            Some("OPS-3".to_string())
+        );
+    }
+
+    #[test]
+    fn test_answer_label_gives_suggested_ticket() {
+        let tickets = suggestions().0;
+
+        assert_eq!(
+            answer_ticket("TRACK-1  Fix login", &tickets),
+            Some(tickets[0].clone())
+        );
+    }
+
+    #[test]
+    fn test_typed_answer_gives_bare_ticket() {
+        assert_eq!(
+            answer_ticket(" NEW-9 ", &suggestions().0),
+            Some(Ticket {
+                id: "NEW-9".to_string(),
+                ..Ticket::default()
+            })
+        );
+        assert_eq!(answer_ticket("  ", &suggestions().0), None);
     }
 }

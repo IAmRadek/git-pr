@@ -90,18 +90,8 @@ fn build_pr_from_branch(
             (Some(ticket), title)
         }
         None => {
-            // Recent tags first, then the tickets that plugins suggest
-            let mut suggestions: Vec<String> = tags.iter().cloned().collect();
-            for ticket in registry.suggest_tickets(ctx) {
-                if !suggestions.contains(&ticket.id) {
-                    suggestions.push(ticket.id);
-                }
-            }
-
-            let ticket = ui::prompt_tag(suggestions)?.map(|id| Ticket {
-                id,
-                ..Ticket::default()
-            });
+            let suggestions = merge_suggestions(tags, registry.suggest_tickets(ctx));
+            let ticket = ui::prompt_tag(suggestions)?;
             let title = pr_title(&ctx.branch, ticket.as_ref());
             println!("{} PR title: {}", ">".bright_green(), title.bright_cyan());
             (ticket, title)
@@ -117,6 +107,27 @@ fn build_pr_from_branch(
         title,
         ..Draft::default()
     })
+}
+
+/// Recent tags first, then the tickets that plugins suggest. A plugin ticket
+/// with the id of a recent tag replaces it in place, so it keeps its summary and link.
+fn merge_suggestions(tags: &Tags, suggested: Vec<Ticket>) -> Vec<Ticket> {
+    let mut tickets: Vec<Ticket> = tags
+        .iter()
+        .map(|id| Ticket {
+            id: id.clone(),
+            ..Ticket::default()
+        })
+        .collect();
+
+    for ticket in suggested {
+        match tickets.iter_mut().find(|t| t.id == ticket.id) {
+            Some(recent) => *recent = ticket,
+            None => tickets.push(ticket),
+        }
+    }
+
+    tickets
 }
 
 /// The subject of the commit that carries `[ID]`, else `[ID]: <default title>`.
@@ -184,6 +195,22 @@ mod tests {
             id: id.to_string(),
             ..Ticket::default()
         }
+    }
+
+    #[test]
+    fn test_merge_suggestions_recent_first_and_plugin_replaces_same_id() {
+        let mut tags = Tags::from_file("/nonexistent/tags.txt").unwrap();
+        tags.add("OLD-1".to_string());
+        tags.add("TRACK-1".to_string());
+        let jira = Ticket {
+            id: "TRACK-1".to_string(),
+            url: Some("https://jira.example.com/browse/TRACK-1".to_string()),
+            summary: Some("Fix login".to_string()),
+        };
+
+        let merged = merge_suggestions(&tags, vec![jira.clone(), ticket("TRACK-2")]);
+
+        assert_eq!(merged, vec![jira, ticket("OLD-1"), ticket("TRACK-2")]);
     }
 
     #[test]
