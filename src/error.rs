@@ -26,9 +26,6 @@ pub enum Error {
     #[error("GitHub CLI error: {0}")]
     GitHubCli(String),
 
-    #[error("Environment variable not set: {0}")]
-    EnvVar(String),
-
     #[error("Jira error: {0}")]
     Jira(String),
 
@@ -43,16 +40,6 @@ pub enum Error {
 
     #[error("Prompt error: {0}")]
     Prompt(String),
-}
-
-impl From<inquire::error::InquireError> for Error {
-    fn from(err: inquire::error::InquireError) -> Self {
-        match err {
-            inquire::error::InquireError::OperationCanceled => Error::Cancelled,
-            inquire::error::InquireError::OperationInterrupted => Error::Cancelled,
-            other => Error::InvalidInput(other.to_string()),
-        }
-    }
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

@@ -75,30 +75,14 @@ fn init_config(config_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let existing = std::fs::read_to_string(&config_path)?;
-    let missing = config::missing_sections(&existing)?;
-
-    if missing.is_empty() {
-        println!(
-            "{} Configuration file is up to date: {}",
-            "Success:".bright_green(),
-            config_path.display()
-        );
-        return Ok(());
-    }
-
-    let backup_path = config_path.with_extension("yaml.bak");
-    std::fs::copy(&config_path, &backup_path)?;
-    std::fs::write(&config_path, config::append_sections(&existing, &missing))?;
-
-    let keys: Vec<&str> = missing.iter().map(|(key, _)| *key).collect();
-    println!(
-        "{} Added sections {} to: {}",
-        "Success:".bright_green(),
-        keys.join(", ").bright_cyan(),
+    // The message goes to stderr, so `git-pr --init > file` writes only the sample
+    eprintln!(
+        "{} Configuration file exists: {}",
+        "!".yellow(),
         config_path.display()
     );
-    println!("The previous file is at: {}", backup_path.display());
+    eprintln!("git-pr did not change it. The default configuration is:\n");
+    print!("{}", config::SAMPLE_CONFIG);
 
     Ok(())
 }

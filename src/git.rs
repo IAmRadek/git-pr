@@ -1,6 +1,4 @@
 use git2::{BranchType, Oid, Repository, RepositoryState};
-use inquire::autocompletion::Replacement;
-use inquire::{Autocomplete, CustomUserError};
 
 use crate::error::Error;
 
@@ -49,34 +47,6 @@ pub struct BranchInfo {
     pub current_branch: String,
     pub bases: Vec<String>,
     pub commits: Vec<String>,
-}
-
-impl Autocomplete for BranchInfo {
-    fn get_suggestions(&mut self, input: &str) -> Result<Vec<String>, CustomUserError> {
-        let mut suggestions = Vec::new();
-        for commit in self.commits.iter().rev() {
-            if commit.to_lowercase().contains(&input.to_lowercase()) {
-                suggestions.push(commit.clone());
-            }
-        }
-        Ok(suggestions)
-    }
-
-    fn get_completion(
-        &mut self,
-        input: &str,
-        highlighted_suggestion: Option<String>,
-    ) -> Result<Replacement, CustomUserError> {
-        if highlighted_suggestion.is_some() {
-            return Ok(highlighted_suggestion);
-        }
-        for commit in self.commits.iter() {
-            if commit.contains(input) {
-                return Ok(Some(commit.clone()));
-            }
-        }
-        Ok(None)
-    }
 }
 
 pub fn get_branch_bases_and_commits() -> Result<BranchInfo, Error> {

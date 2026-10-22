@@ -41,7 +41,7 @@ Generate a default config:
 git-pr --init
 ```
 
-If the config file exists, `--init` adds the sections that it is missing. It keeps your text and comments, and it writes the previous file to `config.yaml.bak`.
+If the config file exists, `--init` does not change it. It prints the default config, with a comment for each option. To save it, run `git-pr --init > config.sample.yaml`.
 
 Example:
 
