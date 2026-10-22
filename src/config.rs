@@ -26,6 +26,7 @@ pub struct Config {
     pub jira: JiraConfig,
     pub template: TemplateConfig,
     pub github: GitHubConfig,
+    pub gitlab: GitLabConfig,
     /// Forge for each origin host, e.g. `git.example.com: github`.
     /// Hosts in `DEFAULT_FORGES` need no entry.
     pub forges: HashMap<String, ForgeKind>,
@@ -50,9 +51,13 @@ pub struct PluginsConfig {
 #[serde(rename_all = "lowercase")]
 pub enum ForgeKind {
     Github,
+    Gitlab,
 }
 
-const DEFAULT_FORGES: &[(&str, ForgeKind)] = &[("github.com", ForgeKind::Github)];
+const DEFAULT_FORGES: &[(&str, ForgeKind)] = &[
+    ("github.com", ForgeKind::Github),
+    ("gitlab.com", ForgeKind::Gitlab),
+];
 
 pub const DEFAULT_JQL: &str =
     "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC";
@@ -127,6 +132,14 @@ impl Default for MarkerConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GitHubConfig {
+    pub user: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitLabConfig {
+    /// The user whose open MRs are related-PR candidates.
+    /// `None` means the user that `glab` is logged in as.
     pub user: Option<String>,
 }
 
@@ -305,6 +318,7 @@ jira:
         let config = Config::default();
 
         assert_eq!(config.forge_kind("github.com"), Some(ForgeKind::Github));
+        assert_eq!(config.forge_kind("gitlab.com"), Some(ForgeKind::Gitlab));
         assert_eq!(config.forge_kind("gitlab.example.com"), None);
     }
 

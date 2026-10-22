@@ -1,7 +1,7 @@
 # git-pr configuration
 # `git-pr --init` writes this file to ~/.config/git-pr/config.yaml, or to the
-# directory in --config or GIT_PR_CONFIG. On an existing file, it adds the
-# sections that are missing.
+# directory in --config or GIT_PR_CONFIG. If the file exists, it prints this
+# sample and does not change the file.
 
 # Jira links. If a ticket comes from a commit or PR title, the PR body links
 # it as <url><ticket>. If this is not set, JIRA_URL is used.
@@ -17,9 +17,15 @@ jira:
 github:
   user: null
 
-# The forge for each origin host. github.com needs no entry.
-# The forge kinds are: github.
+# The user whose open merge requests git-pr links as related PRs. If this is
+# not set, the user that `glab` is logged in as is used.
+gitlab:
+  user: null
+
+# The forge for each origin host. github.com and gitlab.com need no entry.
+# The forge kinds are: github (uses `gh`), gitlab (uses `glab`).
 #   git.example.com: github
+#   gitlab.example.com: gitlab
 forges: {}
 
 # The plugins of each kind, in run order. A missing list uses the defaults.
@@ -35,7 +41,8 @@ forges: {}
 plugins: {}
 
 # The PR body. git-pr uses the first that exists: the repository template of
-# the forge (for GitHub, .github/PULL_REQUEST_TEMPLATE.md), then the file in
+# the forge (for GitHub, .github/PULL_REQUEST_TEMPLATE.md; for GitLab,
+# .gitlab/merge_request_templates/Default.md), then the file in
 # `path`, then `body`. The markers enclose the related-PR block.
 template:
   path: null

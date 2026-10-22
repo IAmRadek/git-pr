@@ -26,6 +26,9 @@ pub enum Error {
     #[error("GitHub CLI error: {0}")]
     GitHubCli(String),
 
+    #[error("GitLab CLI error: {0}")]
+    GitLabCli(String),
+
     #[error("Jira error: {0}")]
     Jira(String),
 

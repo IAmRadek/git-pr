@@ -39,7 +39,7 @@
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
           inputsFrom = [ self.packages.${pkgs.stdenv.hostPlatform.system}.git-pr ];
-          packages = [ pkgs.clippy pkgs.rustfmt pkgs.rust-analyzer pkgs.gh ];
+          packages = [ pkgs.clippy pkgs.rustfmt pkgs.rust-analyzer pkgs.gh pkgs.glab ];
         };
       });
 

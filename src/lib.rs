@@ -8,6 +8,7 @@ pub mod config;
 pub mod error;
 pub mod git;
 pub mod github;
+pub mod gitlab;
 pub mod jira;
 pub mod plugin;
 pub mod related;
