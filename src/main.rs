@@ -53,40 +53,36 @@ fn main() {
     }
 }
 
-/// Initialize a sample configuration file in the config directory
+/// Initialize a sample configuration file in the config directory,
+/// or add the sections that an existing file is missing
 fn init_config(config_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
+    use git_pr::config;
     use std::path::PathBuf;
 
     let config_path = PathBuf::from(config_dir).join("config.yaml");
 
     // Ensure config directory exists
-    git_pr::config::ensure_config_dir_exists(std::path::Path::new(config_dir));
+    config::ensure_config_dir_exists(std::path::Path::new(config_dir));
 
-    // Check if config already exists
-    if config_path.exists() {
-        eprintln!(
-            "{} Configuration file already exists at: {}",
-            "Warning:".bright_yellow(),
+    if !config_path.exists() {
+        std::fs::write(&config_path, config::SAMPLE_CONFIG)?;
+        println!(
+            "{} Created configuration file at: {}",
+            "Success:".bright_green(),
             config_path.display()
         );
-        eprintln!("Use a text editor to modify the existing configuration.");
+        println!("The comments in the file describe each section.");
         return Ok(());
     }
 
-    // Generate and save sample config
-    let config = git_pr::Config::default();
-    config.save(config_dir)?;
-
-    println!(
-        "{} Created configuration file at: {}",
-        "Success:".bright_green(),
+    // The message goes to stderr, so `git-pr --init > file` writes only the sample
+    eprintln!(
+        "{} Configuration file exists: {}",
+        "!".yellow(),
         config_path.display()
     );
-    println!("\nYou can now edit this file to customize:");
-    println!("  - Jira URL for ticket linking");
-    println!("  - GitHub username for related PR discovery");
-    println!("  - Default reviewers");
-    println!("  - Local PR template path and fallback body");
+    eprintln!("git-pr did not change it. The default configuration is:\n");
+    print!("{}", config::SAMPLE_CONFIG);
 
     Ok(())
 }

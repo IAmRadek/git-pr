@@ -33,13 +33,9 @@ thiserror = "1.0.69"
 regex = "1.11.1"
 lazy_static = "1.5.0"
 
+# Jira plugin
+ureq = { version = "3.5.0", features = ["json", "platform-verifier"] }
+base64 = "0.23.1"
+
 [dev-dependencies]
 tempfile = "3.14.0"
-
-# Uncomment when implementing Jira integration
-# [dependencies.jira_query]
-# version = "1.5.0"
-# optional = true
-#
-# [features]
-# jira = ["jira_query"]

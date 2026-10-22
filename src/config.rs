@@ -1,6 +1,7 @@
 //! Configuration management for git-pr.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::error::{Error, Result};
@@ -25,12 +26,66 @@ pub struct Config {
     pub jira: JiraConfig,
     pub template: TemplateConfig,
     pub github: GitHubConfig,
+    /// Forge for each origin host, e.g. `git.example.com: github`.
+    /// Hosts in `DEFAULT_FORGES` need no entry.
+    pub forges: HashMap<String, ForgeKind>,
+    pub plugins: PluginsConfig,
 }
 
+/// Plugin names per kind, in run order. A missing list means the built-in
+/// defaults; an empty list turns that kind off.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
+pub struct PluginsConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ticket_sources: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub draft_hooks: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_create: Option<Vec<String>>,
+}
+
+/// The forges that git-pr can talk to
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ForgeKind {
+    Github,
+}
+
+const DEFAULT_FORGES: &[(&str, ForgeKind)] = &[("github.com", ForgeKind::Github)];
+
+pub const DEFAULT_JQL: &str =
+    "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct JiraConfig {
+    /// The ticket link prefix, ending in `/browse/`. The `jira` plugin also
+    /// derives the API address from it.
     pub url: Option<String>,
+    /// Chooses the authentication and the search endpoint of the `jira` plugin
+    pub kind: JiraKind,
+    /// The query for the tickets that the `jira` plugin suggests
+    pub jql: String,
+}
+
+impl Default for JiraConfig {
+    fn default() -> Self {
+        Self {
+            url: None,
+            kind: JiraKind::default(),
+            jql: DEFAULT_JQL.to_string(),
+        }
+    }
+}
+
+/// Jira Cloud (atlassian.net) or a self-hosted Data Center or Server
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JiraKind {
+    #[default]
+    Cloud,
+    Datacenter,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,7 +128,6 @@ impl Default for MarkerConfig {
 #[serde(default)]
 pub struct GitHubConfig {
     pub user: Option<String>,
-    pub default_reviewers: Vec<String>,
 }
 
 impl Config {
@@ -89,13 +143,6 @@ impl Config {
 
         config.apply_env_overrides();
         Ok(config)
-    }
-
-    pub fn save(&self, config_dir: &str) -> Result<()> {
-        let config_path = PathBuf::from(config_dir).join(CONFIG_FILE);
-        let contents = serde_yaml::to_string(self).map_err(|e| Error::Config(e.to_string()))?;
-        std::fs::write(&config_path, contents).map_err(Error::Io)?;
-        Ok(())
     }
 
     fn apply_env_overrides(&mut self) {
@@ -124,18 +171,19 @@ impl Config {
         self.github.user.clone()
     }
 
-    pub fn sample_yaml() -> String {
-        let config = Config::default();
-        serde_yaml::to_string(&config).unwrap_or_else(|_| "# Error generating sample".to_string())
+    /// The forge for `host`: the `forges` entry first, then `DEFAULT_FORGES`
+    pub fn forge_kind(&self, host: &str) -> Option<ForgeKind> {
+        self.forges.get(host).copied().or_else(|| {
+            DEFAULT_FORGES
+                .iter()
+                .find(|(default_host, _)| *default_host == host)
+                .map(|(_, kind)| *kind)
+        })
     }
 }
 
-pub fn get_tags_path() -> String {
-    let path = PathBuf::from(get_config_dir()).join("tags.txt");
-    path.to_str()
-        .expect("Failed to convert tags path to string")
-        .to_string()
-}
+/// The commented sample that `--init` writes
+pub const SAMPLE_CONFIG: &str = include_str!("../git-pr.yaml");
 
 pub fn get_tags_path_with_dir(config_dir: &str) -> String {
     let path = PathBuf::from(config_dir).join("tags.txt");
@@ -173,8 +221,8 @@ mod tests {
 
     #[test]
     fn test_get_tags_path_ends_with_tags_txt() {
-        let tags_path = get_tags_path();
-        assert!(tags_path.ends_with("tags.txt"));
+        let tags_path = get_tags_path_with_dir("/tmp/git-pr");
+        assert_eq!(tags_path, "/tmp/git-pr/tags.txt");
     }
 
     #[test]
@@ -221,6 +269,7 @@ template:
     related_pr_end: "<!-- END -->"
 github:
   user: "testuser"
+  # Removed setting; old configs must still load
   default_reviewers:
     - "reviewer1"
     - "reviewer2"
@@ -235,7 +284,6 @@ github:
         assert_eq!(config.template.markers.related_pr_start, "<!-- START -->");
         assert_eq!(config.template.markers.related_pr_end, "<!-- END -->");
         assert_eq!(config.github.user, Some("testuser".to_string()));
-        assert_eq!(config.github.default_reviewers.len(), 2);
     }
 
     #[test]
@@ -253,9 +301,67 @@ jira:
     }
 
     #[test]
-    fn test_sample_yaml_generation() {
-        let sample = Config::sample_yaml();
-        assert!(sample.contains("jira:"));
-        assert!(sample.contains("template:"));
+    fn test_forge_kind_default_host() {
+        let config = Config::default();
+
+        assert_eq!(config.forge_kind("github.com"), Some(ForgeKind::Github));
+        assert_eq!(config.forge_kind("gitlab.example.com"), None);
+    }
+
+    #[test]
+    fn test_forge_kind_from_config() {
+        let yaml = r#"
+forges:
+  git.example.com: github
+"#;
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+
+        assert_eq!(
+            config.forge_kind("git.example.com"),
+            Some(ForgeKind::Github)
+        );
+        assert_eq!(config.forge_kind("github.com"), Some(ForgeKind::Github));
+    }
+
+    #[test]
+    fn test_sample_config_matches_defaults() {
+        let config: Config = serde_yaml::from_str(SAMPLE_CONFIG).unwrap();
+        let defaults = Config::default();
+
+        assert_eq!(config.jira.url, defaults.jira.url);
+        assert_eq!(config.jira.kind, defaults.jira.kind);
+        assert_eq!(config.jira.jql, DEFAULT_JQL);
+        assert_eq!(config.github.user, defaults.github.user);
+        assert!(config.forges.is_empty());
+        assert!(config.plugins.ticket_sources.is_none());
+        assert!(config.plugins.draft_hooks.is_none());
+        assert!(config.plugins.after_create.is_none());
+        assert_eq!(config.template.path, defaults.template.path);
+        assert_eq!(config.template.body, DEFAULT_TEMPLATE);
+        assert_eq!(
+            config.template.markers.related_pr_start,
+            defaults.template.markers.related_pr_start
+        );
+        assert_eq!(
+            config.template.markers.related_pr_end,
+            defaults.template.markers.related_pr_end
+        );
+    }
+
+    #[test]
+    fn test_sample_config_has_every_section() {
+        let defaults = serde_yaml::to_value(Config::default()).unwrap();
+        let serde_yaml::Value::Mapping(sections) = defaults else {
+            panic!("Config does not serialize to a mapping");
+        };
+
+        for key in sections.keys() {
+            let key = key.as_str().unwrap();
+            assert!(
+                SAMPLE_CONFIG.contains(&format!("\n{}:", key)),
+                "the sample has no `{}` section",
+                key
+            );
+        }
     }
 }

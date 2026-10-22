@@ -41,6 +41,8 @@ Generate a default config:
 git-pr --init
 ```
 
+If the config file exists, `--init` does not change it. It prints the default config, with a comment for each option. To save it, run `git-pr --init > config.sample.yaml`.
+
 Example:
 
 ```yaml
@@ -49,9 +51,6 @@ jira:
 
 github:
   user: "your-username"
-  default_reviewers:
-    - teammate1
-    - teammate2
 
 template:
   path: "/absolute/path/to/pull_request_template.md"
@@ -70,6 +69,45 @@ template:
     related_pr_start: "<!-- RELATED_PR -->"
     related_pr_end: "<!-- /RELATED_PR -->"
 ```
+
+## Forges
+
+`git-pr` chooses the forge from the host of the `origin` remote. `github.com` needs no entry. For another host, add it under `forges`:
+
+```yaml
+forges:
+  git.example.com: github
+```
+
+If the host has no forge, `git-pr` stops with an error.
+
+## Plugins
+
+The `plugins` section lists the plugins of each kind, in run order. These are the built-in defaults:
+
+```yaml
+plugins:
+  ticket_sources: [commit_tags]   # the first detected ticket wins
+  draft_hooks: [template_body]    # run before and after the editor
+  after_create: [related_prs]     # run after the PR step
+```
+
+If a list is missing, `git-pr` uses its defaults. An empty list turns that kind off. If a name is unknown, `git-pr` prints a warning and skips it.
+
+### Jira
+
+The `jira` ticket source suggests tickets at the `PR Tag:` prompt. It runs the query in `jira.jql` and detects nothing. If its `jira` section or a token variable is wrong, `git-pr` prints a warning and skips it.
+
+```yaml
+jira:
+  url: "https://yourcompany.atlassian.net/browse/"   # the API address is the part before browse/
+  kind: cloud                                        # or datacenter
+  jql: "assignee = currentUser() AND statusCategory != Done ORDER BY updated DESC"
+plugins:
+  ticket_sources: [commit_tags, jira]
+```
+
+The token comes from the environment. Jira Cloud needs `JIRA_USER` (the account email) and `JIRA_TOKEN` (an API token). Data Center needs `JIRA_TOKEN` (a personal access token).
 
 ## Template Resolution
 
