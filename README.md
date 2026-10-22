@@ -22,7 +22,8 @@ cargo install --path .
 
 ## Prerequisites
 
-- `gh` installed and authenticated
+- `gh` installed and authenticated, for GitHub repositories
+- `glab` installed and authenticated, for GitLab repositories
 - a git repository with at least one commit on the current branch
 
 ## Configuration
@@ -72,14 +73,17 @@ template:
 
 ## Forges
 
-`git-pr` chooses the forge from the host of the `origin` remote. `github.com` needs no entry. For another host, add it under `forges`:
+`git-pr` chooses the forge from the host of the `origin` remote. `github.com` and `gitlab.com` need no entry. For another host, add it under `forges`:
 
 ```yaml
 forges:
   git.example.com: github
+  gitlab.example.com: gitlab
 ```
 
 If the host has no forge, `git-pr` stops with an error.
+
+The GitLab forge uses `glab`. It assigns the merge request to you, uses `.gitlab/merge_request_templates/Default.md` as the template, and refers to related merge requests as `group/project!12`.
 
 ## Plugins
 

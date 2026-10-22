@@ -11,6 +11,7 @@ use crate::config::{Config, ForgeKind};
 use crate::error::{Error, Result};
 use crate::git::{self, BranchInfo};
 use crate::github::{GhForge, GhReviewers};
+use crate::gitlab::{GlForge, GlReviewers};
 use crate::jira::JiraTickets;
 use crate::related::RelatedPrs;
 use crate::tags::CommitTags;
@@ -166,6 +167,7 @@ impl Registry {
 
         let mut registry = match config.forge_kind(host) {
             Some(ForgeKind::Github) => Self::github(config),
+            Some(ForgeKind::Gitlab) => Self::gitlab(config),
             None => {
                 return Err(Error::Config(format!(
                     "No forge for host {}. Add it under `forges` in config.yaml",
@@ -219,6 +221,18 @@ impl Registry {
             ticket_sources: vec![],
             draft_hooks: vec![],
             reviewer_source: Some(Box::new(GhReviewers)),
+            after_create: vec![],
+        }
+    }
+
+    fn gitlab(config: &Config) -> Self {
+        Self {
+            forge: Box::new(GlForge {
+                user: config.gitlab.user.clone(),
+            }),
+            ticket_sources: vec![],
+            draft_hooks: vec![],
+            reviewer_source: Some(Box::new(GlReviewers)),
             after_create: vec![],
         }
     }
@@ -602,6 +616,19 @@ mod tests {
         let registry = Registry::for_origin(&Config::default(), "git@github.com:o/r.git");
 
         assert!(registry.is_ok());
+    }
+
+    #[test]
+    fn test_for_origin_gitlab() {
+        let registry =
+            Registry::for_origin(&Config::default(), "git@gitlab.com:group/sub/r.git").unwrap();
+        let pr = PrRef {
+            repo: "group/sub/r".into(),
+            number: 1,
+        };
+
+        assert_eq!(registry.forge.link(&pr), "group/sub/r!1");
+        assert_eq!(registry.reviewer_source.unwrap().name(), "gitlab_reviewers");
     }
 
     #[test]
